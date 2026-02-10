@@ -252,6 +252,13 @@ class SkillManager:
         """
         return self.active_skills.copy()
 
+    def clear_active_skills(self):
+        """Clear all active skills.
+
+        This is typically called when resetting conversation state.
+        """
+        self.active_skills.clear()
+
     def get_skills_context(self) -> str:
         """Get context about active skills for the LLM.
 

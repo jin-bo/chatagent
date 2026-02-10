@@ -134,8 +134,9 @@ Always be helpful, accurate, and efficient."""
         self.messages.append({"role": role, "content": content})
 
     def clear_history(self):
-        """Clear conversation history."""
+        """Clear conversation history and deactivate all skills."""
         self.messages = []
+        self.skill_manager.clear_active_skills()
 
     def chat(self, user_message: str, max_iterations: int = 100) -> str:
         """Process user message and generate response.
