@@ -1,0 +1,21 @@
+[project]
+name = "chatagent"
+version = "0.1.0"
+description = "A CLI chat agent with tools and skills support"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.0.0",
+    "rich>=13.0.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.25.0",
+    "beautifulsoup4>=4.12.0",
+    "pygments>=2.16.0",
+]
+
+[project.scripts]
+chatagent = "chatagent.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
