@@ -151,6 +151,37 @@ class SkillManager:
         """
         return self.available_skills.get(skill_name)
 
+    def _list_skill_resources(self, skill_name: str) -> Dict[str, List[str]]:
+        """List available resource files (references and assets) for a skill.
+
+        Args:
+            skill_name: Name of the skill
+
+        Returns:
+            Dictionary with 'references' and 'assets' keys containing file paths
+        """
+        skill_info = self.get_skill_info(skill_name)
+        if not skill_info or 'path' not in skill_info:
+            return {"references": [], "assets": []}
+
+        # Get skill directory
+        skill_dir = Path(skill_info['path']).parent
+        resources = {"references": [], "assets": []}
+
+        # Check references directory
+        references_dir = skill_dir / "references"
+        if references_dir.exists() and references_dir.is_dir():
+            for file_path in references_dir.rglob("*.md"):
+                resources["references"].append(str(file_path))
+
+        # Check assets directory
+        assets_dir = skill_dir / "assets"
+        if assets_dir.exists() and assets_dir.is_dir():
+            for file_path in assets_dir.rglob("*.md"):
+                resources["assets"].append(str(file_path))
+
+        return resources
+
     def activate_skill(self, skill_name: str, task_description: str) -> str:
         """Activate a skill.
 
@@ -178,6 +209,23 @@ class SkillManager:
             message += f"Description: {skill_info['description'][:200]}...\n"
         message += f"Task: {task_description}\n"
         message += f"Documentation: {skill_info.get('path', 'N/A')}\n"
+
+        # List available resource files
+        resources = self._list_skill_resources(skill_name)
+        if resources["references"] or resources["assets"]:
+            message += "\n=== Available Resource Files ===\n"
+            message += "You can use the read_file tool to load these files as needed:\n\n"
+
+            if resources["references"]:
+                message += "References:\n"
+                for ref_path in sorted(resources["references"]):
+                    message += f"  - {ref_path}\n"
+
+            if resources["assets"]:
+                message += "\nAssets:\n"
+                for asset_path in sorted(resources["assets"]):
+                    message += f"  - {asset_path}\n"
+
         message += "\nThe skill is now active. You can reference its documentation for detailed usage."
 
         return message
