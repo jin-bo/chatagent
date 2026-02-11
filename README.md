@@ -10,6 +10,7 @@ A powerful CLI chat agent with tools and Claude Skills support. Built with Pytho
 - Smart tool selection and execution
 - Memory system for saving important information
 - **Complete logging** of all LLM interactions to `chatagent.log`
+- **Auto-loading of project instructions** from `CHATAGENT.md` at startup
 
 ### 🛠️ Comprehensive Tools
 
@@ -105,6 +106,20 @@ pip install -e .
 cp .env.example .env
 # Edit .env and add your API key
 ```
+
+## Project Instructions
+
+ChatAgent automatically loads project-specific instructions from `CHATAGENT.md` if it exists in the current directory. This file is injected into the system prompt at the start of each session, allowing you to define:
+
+- Code style and conventions
+- Project structure and patterns
+- Development workflows
+- Testing approaches
+- Common commands and best practices
+
+The `CHATAGENT.md` file is automatically detected and loaded when the agent starts. If the file doesn't exist, the agent continues to work normally with its default instructions.
+
+See the included `CHATAGENT.md` for an example of project-specific instructions for this codebase.
 
 ## Configuration
 

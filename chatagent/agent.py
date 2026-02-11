@@ -1,6 +1,7 @@
 """Main agent logic for ChatAgent."""
 
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .llm import LLMClient
@@ -50,6 +51,27 @@ class ChatAgent:
         # Conversation history
         self.messages: List[Dict[str, Any]] = []
 
+        # Load project instructions if available
+        self.project_instructions = self._load_project_instructions()
+
+    def _load_project_instructions(self) -> Optional[str]:
+        """Load project-specific instructions from CHATAGENT.md.
+
+        Returns:
+            Project instructions content or None if file doesn't exist
+        """
+        try:
+            # Look for CHATAGENT.md in current directory
+            chatagent_md = Path.cwd() / "CHATAGENT.md"
+            if chatagent_md.exists():
+                content = chatagent_md.read_text(encoding='utf-8')
+                self.llm.logger.info(f"Loaded project instructions from {chatagent_md}")
+                return content
+        except Exception as e:
+            self.llm.logger.warning(f"Could not load CHATAGENT.md: {e}")
+
+        return None
+
     def _register_tools(self):
         """Register all available tools."""
         tools_to_register = [
@@ -77,7 +99,17 @@ class ChatAgent:
         Returns:
             System prompt string
         """
-        prompt = """You are ChatAgent, a helpful AI assistant with access to various tools and skills.
+        # Start with project-specific instructions if available
+        if self.project_instructions:
+            prompt = f"""=== Project Instructions ===
+
+{self.project_instructions}
+
+=== Agent Instructions ===
+
+You are ChatAgent, a helpful AI assistant with access to various tools and skills."""
+        else:
+            prompt = """You are ChatAgent, a helpful AI assistant with access to various tools and skills.
 
 You can help users with:
 - Reading, writing, and editing files
