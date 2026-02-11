@@ -44,3 +44,9 @@ chatagent.log
 # OS
 .DS_Store
 Thumbs.db
+
+# Temporary development files
+scratch_*.py
+HIDDEN_*.md
+*_DRAFT.md
+*.tmp

@@ -70,6 +70,11 @@ class WriteFileTool(Tool):
             "required": ["file_path", "content"],
         }
 
+    @property
+    def requires_confirmation(self) -> bool:
+        """File writing requires user confirmation to prevent data loss."""
+        return True
+
     def execute(self, file_path: str, content: str) -> str:
         """Write content to file."""
         try:

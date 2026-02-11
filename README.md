@@ -458,6 +458,14 @@ chatagent/
 ├── .env                    # Configuration (create from .env.example)
 ├── .env.example            # Configuration template
 ├── README.md               # This file
+├── tests/                  # Test files
+│   ├── __init__.py
+│   ├── README.md           # Test documentation
+│   └── test_*.py           # Individual test files
+├── docs/                   # Documentation
+│   ├── README.md           # Documentation index
+│   ├── features/           # Feature documentation
+│   └── updates/            # Update logs
 └── chatagent/
     ├── __init__.py
     ├── cli.py              # CLI interface
@@ -479,6 +487,57 @@ chatagent/
         ├── __init__.py
         └── manager.py      # Skills manager
 ```
+
+## Testing
+
+ChatAgent includes comprehensive tests for all major features.
+
+### Running Tests
+
+**Run all tests:**
+```bash
+uv run python -m pytest tests/
+```
+
+**Run a specific test file:**
+```bash
+uv run python tests/test_imports.py
+```
+
+**Run with pytest (if installed):**
+```bash
+uv run pytest tests/ -v
+```
+
+### Test Categories
+
+- **Core functionality** - Imports, logging, multi-turn conversations
+- **Features** - CHATAGENT.md loading, tool confirmation, date context
+- **Skills** - Skills loading, activation, prompt integration
+- **Commands** - CLI commands like `/model`, `/status`, `/clear`
+
+See [tests/README.md](tests/README.md) for detailed test documentation.
+
+## Documentation
+
+Comprehensive documentation is available in the `docs/` directory:
+
+### Feature Documentation
+Detailed design and implementation docs for major features:
+- [CHATAGENT.md Auto-loading](docs/features/CHATAGENT_MD_FEATURE.md)
+- [Tool Confirmation System](docs/features/TOOL_CONFIRMATION_FEATURE.md)
+- [Date Context Injection](docs/features/DATE_CONTEXT_FEATURE.md)
+
+### Update Logs
+Detailed change logs for specific updates:
+- [Skills System](docs/updates/SKILLS_UPDATE.md)
+- [Logging Improvements](docs/updates/LOGGING_UPDATE.md)
+- [CLI Commands](docs/updates/COMMANDS_UPDATE.md)
+- [Model Switching](docs/updates/MODEL_COMMAND_UPDATE.md)
+- [Skills Prompt Integration](docs/updates/SKILLS_PROMPT_UPDATE.md)
+- [Menu Confirmation](docs/updates/MENU_CONFIRMATION_UPDATE.md)
+
+See [docs/README.md](docs/README.md) for the complete documentation index.
 
 ## Advanced Usage
 

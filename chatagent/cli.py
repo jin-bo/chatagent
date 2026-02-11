@@ -34,6 +34,7 @@ class ChatAgentCLI:
 
         # Track session-wide confirmation preferences
         self.allow_all_tools = False  # "Yes to all" mode
+        self.current_status = None  # Track active status context
 
         self.agent = ChatAgent(
             api_key=os.getenv("OPENAI_API_KEY"),
@@ -58,62 +59,72 @@ class ChatAgentCLI:
             console.print(f"[dim]✓ Auto-approved: {tool_name} (allow all mode)[/dim]")
             return True
 
-        # Display tool information
-        console.print(f"\n[yellow]⚠️  Tool Confirmation Required[/yellow]")
-        console.print(f"[info]Tool:[/info] [cyan]{tool_name}[/cyan]")
-        console.print(f"[info]Description:[/info] {tool_description}")
-        console.print(f"[info]Arguments:[/info]")
+        # Pause the "Thinking..." spinner during user confirmation
+        if self.current_status:
+            self.current_status.stop()
 
-        # Format arguments nicely
-        for key, value in tool_args.items():
-            # Truncate long values
-            value_str = str(value)
-            if len(value_str) > 100:
-                value_str = value_str[:100] + "..."
-            console.print(f"  • {key}: {value_str}")
+        try:
+            # Display tool information
+            console.print(f"\n[yellow]⚠️  Tool Confirmation Required[/yellow]")
+            console.print(f"[info]Tool:[/info] [cyan]{tool_name}[/cyan]")
+            console.print(f"[info]Description:[/info] {tool_description}")
+            console.print(f"[info]Arguments:[/info]")
 
-        # Display menu with better formatting
-        console.print("\n[bold]Choose an option:[/bold]")
-        console.print(" [green]1[/green]. Yes")
-        console.print(" [green]2[/green]. Yes, allow all tools during this session")
-        console.print(" [red]3[/red]. No")
-        console.print("\n[dim]Press 1, 2, or 3 (single key, no Enter needed) · Esc to cancel[/dim]", end=" ")
+            # Format arguments nicely
+            for key, value in tool_args.items():
+                # Truncate long values
+                value_str = str(value)
+                if len(value_str) > 100:
+                    value_str = value_str[:100] + "..."
+                console.print(f"  • {key}: {value_str}")
 
-        # Get single-key input using readchar
-        while True:
-            try:
-                key = readchar.readkey()
+            # Display menu with better formatting
+            console.print("\n[bold]Choose an option:[/bold]")
+            console.print(" [green]1[/green]. Yes")
+            console.print(" [green]2[/green]. Yes, allow all tools during this session")
+            console.print(" [red]3[/red]. No")
+            console.print("\n[dim]Press 1, 2, or 3 (single key, no Enter needed) · Esc to cancel[/dim]", end=" ")
 
-                # Handle number keys
-                if key == "1":
-                    console.print("\n[green]✓ Executing tool[/green]")
-                    return True
-                elif key == "2":
-                    self.allow_all_tools = True
-                    console.print("\n[green]✓ Executing tool (allow all mode enabled for this session)[/green]")
-                    return True
-                elif key == "3":
+            # Get single-key input using readchar
+            while True:
+                try:
+                    key = readchar.readkey()
+
+                    # Handle number keys
+                    if key == "1":
+                        console.print("\n[green]✓ Executing tool[/green]")
+                        return True
+                    elif key == "2":
+                        self.allow_all_tools = True
+                        console.print("\n[green]✓ Executing tool (allow all mode enabled for this session)[/green]")
+                        return True
+                    elif key == "3":
+                        console.print("\n[red]✗ Cancelled[/red]")
+                        return False
+                    # Handle Esc key
+                    elif key == readchar.key.ESC:
+                        console.print("\n[red]✗ Cancelled[/red]")
+                        return False
+                    # Handle Ctrl+C
+                    elif key == readchar.key.CTRL_C:
+                        console.print("\n[red]✗ Cancelled[/red]")
+                        return False
+                    # Ignore other keys
+                    else:
+                        continue
+
+                except KeyboardInterrupt:
                     console.print("\n[red]✗ Cancelled[/red]")
                     return False
-                # Handle Esc key
-                elif key == readchar.key.ESC:
-                    console.print("\n[red]✗ Cancelled[/red]")
+                except Exception as e:
+                    # Fallback to cancelled on any error
+                    console.print(f"\n[red]✗ Cancelled (error: {e})[/red]")
                     return False
-                # Handle Ctrl+C
-                elif key == readchar.key.CTRL_C:
-                    console.print("\n[red]✗ Cancelled[/red]")
-                    return False
-                # Ignore other keys
-                else:
-                    continue
 
-            except KeyboardInterrupt:
-                console.print("\n[red]✗ Cancelled[/red]")
-                return False
-            except Exception as e:
-                # Fallback to cancelled on any error
-                console.print(f"\n[red]✗ Cancelled (error: {e})[/red]")
-                return False
+        finally:
+            # Resume the "Thinking..." spinner after user makes a choice
+            if self.current_status:
+                self.current_status.start()
 
     def print_welcome(self):
         """Print welcome message."""
@@ -362,7 +373,8 @@ Type `/skills` to see available skills, or ask the agent to activate a specific 
 
                 # Process with agent
                 console.print("\n[bold green]Assistant[/bold green]")
-                with console.status("[bold yellow]Thinking...", spinner="dots"):
+                self.current_status = console.status("[bold yellow]Thinking...", spinner="dots")
+                with self.current_status:
                     response = self.agent.chat(user_input)
 
                 # Display response
