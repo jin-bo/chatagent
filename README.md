@@ -12,6 +12,7 @@ A powerful CLI chat agent with tools and Claude Skills support. Built with Pytho
 - **Complete logging** of all LLM interactions to `chatagent.log`
 - **Auto-loading of project instructions** from `CHATAGENT.md` at startup
 - **🔒 Tool confirmation** - User confirmation required for Shell & Web tools
+- **📅 Current date context** - System prompt includes current date and time
 
 ### 🛠️ Comprehensive Tools
 
@@ -153,6 +154,19 @@ This prevents accidental or malicious:
 - Destructive shell commands
 - Unintended web requests
 - Exposure of sensitive information
+
+## Current Date Context
+
+ChatAgent automatically includes the current date and time in the system prompt, helping the AI understand temporal context for:
+
+- **Date-aware tasks**: Creating files with timestamps, scheduling, deadlines
+- **Time-sensitive queries**: "What happened today?", "Recent changes"
+- **Log analysis**: Understanding when events occurred
+- **File organization**: Sorting by date, finding recent files
+
+**Format**: `Current Date and Time: 2026-02-11 14:40:58 (Wednesday)`
+
+This information is updated with each new conversation, ensuring the AI always has accurate temporal context.
 
 ## Configuration
 

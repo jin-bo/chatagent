@@ -1,6 +1,7 @@
 """Main agent logic for ChatAgent."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -103,6 +104,13 @@ class ChatAgent:
         Returns:
             System prompt string
         """
+        # Get current date and time
+        now = datetime.now()
+        current_date = now.strftime("%Y-%m-%d")
+        current_time = now.strftime("%H:%M:%S")
+        current_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
+        day_of_week = now.strftime("%A")
+
         # Start with project-specific instructions if available
         if self.project_instructions:
             prompt = f"""=== Project Instructions ===
@@ -111,9 +119,13 @@ class ChatAgent:
 
 === Agent Instructions ===
 
-You are ChatAgent, a helpful AI assistant with access to various tools and skills."""
+You are ChatAgent, a helpful AI assistant with access to various tools and skills.
+
+Current Date and Time: {current_datetime} ({day_of_week})"""
         else:
-            prompt = """You are ChatAgent, a helpful AI assistant with access to various tools and skills.
+            prompt = f"""You are ChatAgent, a helpful AI assistant with access to various tools and skills.
+
+Current Date and Time: {current_datetime} ({day_of_week})
 
 You can help users with:
 - Reading, writing, and editing files
