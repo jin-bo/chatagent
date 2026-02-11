@@ -40,6 +40,11 @@ class ShellTool(Tool):
             "required": ["command"],
         }
 
+    @property
+    def requires_confirmation(self) -> bool:
+        """Shell commands require user confirmation for safety."""
+        return True
+
     def execute(
         self, command: str, working_directory: str = ".", timeout: float = 30
     ) -> str:

@@ -39,6 +39,11 @@ class WebFetchTool(Tool):
             "required": ["url"],
         }
 
+    @property
+    def requires_confirmation(self) -> bool:
+        """Web fetch requires user confirmation for safety."""
+        return True
+
     def execute(self, url: str, extract_text: bool = True) -> str:
         """Fetch web content."""
         try:
@@ -112,6 +117,11 @@ class GoogleSearchTool(Tool):
             },
             "required": ["query"],
         }
+
+    @property
+    def requires_confirmation(self) -> bool:
+        """Web search requires user confirmation for safety."""
+        return True
 
     def execute(self, query: str, num_results: int = 5) -> str:
         """Perform Google search."""

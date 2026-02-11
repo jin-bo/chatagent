@@ -7,7 +7,7 @@ from typing import Optional
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Prompt
+from rich.prompt import Confirm, Prompt
 from rich.theme import Theme
 from dotenv import load_dotenv
 
@@ -35,7 +35,37 @@ class ChatAgentCLI:
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("OPENAI_BASE_URL"),
             model=os.getenv("OPENAI_MODEL"),
+            confirmation_callback=self.confirm_tool_execution,
         )
+
+    def confirm_tool_execution(self, tool_name: str, tool_description: str, tool_args: dict) -> bool:
+        """Prompt user to confirm tool execution.
+
+        Args:
+            tool_name: Name of the tool to execute
+            tool_description: Description of the tool
+            tool_args: Arguments to pass to the tool
+
+        Returns:
+            True if user confirms, False otherwise
+        """
+        console.print(f"\n[yellow]⚠️  Tool Confirmation Required[/yellow]")
+        console.print(f"[info]Tool:[/info] [cyan]{tool_name}[/cyan]")
+        console.print(f"[info]Description:[/info] {tool_description}")
+        console.print(f"[info]Arguments:[/info]")
+
+        # Format arguments nicely
+        for key, value in tool_args.items():
+            # Truncate long values
+            value_str = str(value)
+            if len(value_str) > 100:
+                value_str = value_str[:100] + "..."
+            console.print(f"  • {key}: {value_str}")
+
+        # Ask for confirmation
+        confirmed = Confirm.ask("\n[bold]Do you want to execute this tool?[/bold]", default=False)
+
+        return confirmed
 
     def print_welcome(self):
         """Print welcome message."""

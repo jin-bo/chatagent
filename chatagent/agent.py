@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .llm import LLMClient
 from .tools import (
@@ -32,6 +32,7 @@ class ChatAgent:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
+        confirmation_callback: Optional[Callable[[str, str, Dict[str, Any]], bool]] = None,
     ):
         """Initialize chat agent.
 
@@ -39,10 +40,13 @@ class ChatAgent:
             api_key: API key for LLM service
             base_url: Base URL for API endpoint
             model: Model name to use
+            confirmation_callback: Optional callback for tool confirmation.
+                                   Takes (tool_name, tool_description, tool_args) and returns bool
         """
         self.llm = LLMClient(api_key=api_key, base_url=base_url, model=model)
         self.skill_manager = SkillManager()
         self.memory_tool = SaveMemoryTool()
+        self.confirmation_callback = confirmation_callback
 
         # Initialize tool registry
         self.tools = ToolRegistry()
@@ -234,7 +238,25 @@ Always be helpful, accurate, and efficient."""
                     # Execute tool
                     try:
                         tool = self.tools.get(function_name)
-                        result = tool.execute(**function_args)
+
+                        # Check if tool requires confirmation
+                        if tool.requires_confirmation and self.confirmation_callback:
+                            self.llm.logger.info(f"Tool {function_name} requires confirmation")
+                            confirmed = self.confirmation_callback(
+                                function_name,
+                                tool.description,
+                                function_args
+                            )
+
+                            if not confirmed:
+                                self.llm.logger.info(f"Tool {function_name} execution cancelled by user")
+                                result = f"Tool execution cancelled by user. The user declined to execute {function_name}."
+                            else:
+                                self.llm.logger.info(f"Tool {function_name} execution confirmed by user")
+                                result = tool.execute(**function_args)
+                        else:
+                            # No confirmation needed or no callback provided
+                            result = tool.execute(**function_args)
                     except Exception as e:
                         result = f"Error executing {function_name}: {str(e)}"
 

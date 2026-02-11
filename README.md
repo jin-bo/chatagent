@@ -11,6 +11,7 @@ A powerful CLI chat agent with tools and Claude Skills support. Built with Pytho
 - Memory system for saving important information
 - **Complete logging** of all LLM interactions to `chatagent.log`
 - **Auto-loading of project instructions** from `CHATAGENT.md` at startup
+- **🔒 Tool confirmation** - User confirmation required for Shell & Web tools
 
 ### 🛠️ Comprehensive Tools
 
@@ -120,6 +121,38 @@ ChatAgent automatically loads project-specific instructions from `CHATAGENT.md` 
 The `CHATAGENT.md` file is automatically detected and loaded when the agent starts. If the file doesn't exist, the agent continues to work normally with its default instructions.
 
 See the included `CHATAGENT.md` for an example of project-specific instructions for this codebase.
+
+## Tool Confirmation (Safety Feature)
+
+For security, ChatAgent requires user confirmation before executing potentially dangerous tools:
+
+**Tools requiring confirmation:**
+- 🔧 **`run_shell_command`** - Shell command execution
+- 🌐 **`web_fetch`** - Fetching web content
+- 🌐 **`google_web_search`** - Web search
+
+**How it works:**
+1. When the agent wants to use these tools, execution pauses
+2. You see a confirmation prompt with tool details and arguments
+3. You choose to approve (y) or deny (n) the execution
+4. If denied, the agent is notified and can try alternative approaches
+
+**Example:**
+```
+⚠️  Tool Confirmation Required
+Tool: run_shell_command
+Description: Execute a shell command and return its output
+Arguments:
+  • command: ls -la
+  • working_directory: .
+
+Do you want to execute this tool? (y/n):
+```
+
+This prevents accidental or malicious:
+- Destructive shell commands
+- Unintended web requests
+- Exposure of sensitive information
 
 ## Configuration
 
