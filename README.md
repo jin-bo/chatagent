@@ -134,8 +134,12 @@ For security, ChatAgent requires user confirmation before executing potentially 
 
 **How it works:**
 1. When the agent wants to use these tools, execution pauses
-2. You see a confirmation prompt with tool details and arguments
-3. You choose to approve (y) or deny (n) the execution
+2. You see a menu with tool details and confirmation options
+3. Press a single key to choose (no Enter needed):
+   - **1** - Yes, execute this tool once
+   - **2** - Yes to all, execute and allow all tools for this session
+   - **3** - No, cancel execution
+   - **Esc** - Cancel execution
 4. If denied, the agent is notified and can try alternative approaches
 
 **Example:**
@@ -147,8 +151,20 @@ Arguments:
   • command: ls -la
   • working_directory: .
 
-Do you want to execute this tool? (y/n):
+Choose an option:
+ 1. Yes
+ 2. Yes, allow all tools during this session
+ 3. No
+
+Press 1, 2, or 3 (single key, no Enter needed) · Esc to cancel
 ```
+
+**Single-key input** - Just press the number, no need to press Enter!
+
+**Additional features:**
+- Use `/status` to check if "allow all" mode is enabled
+- Use `/reset-confirm` to reset to prompt mode (keeps conversation history)
+- Use `/clear` to clear conversation AND reset confirmation mode (fresh start)
 
 This prevents accidental or malicious:
 - Destructive shell commands

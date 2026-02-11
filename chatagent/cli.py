@@ -4,6 +4,7 @@ import os
 import sys
 from typing import Optional
 
+import readchar
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -31,6 +32,9 @@ class ChatAgentCLI:
         """Initialize CLI."""
         load_dotenv()
 
+        # Track session-wide confirmation preferences
+        self.allow_all_tools = False  # "Yes to all" mode
+
         self.agent = ChatAgent(
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("OPENAI_BASE_URL"),
@@ -39,7 +43,7 @@ class ChatAgentCLI:
         )
 
     def confirm_tool_execution(self, tool_name: str, tool_description: str, tool_args: dict) -> bool:
-        """Prompt user to confirm tool execution.
+        """Prompt user to confirm tool execution with menu options.
 
         Args:
             tool_name: Name of the tool to execute
@@ -49,6 +53,12 @@ class ChatAgentCLI:
         Returns:
             True if user confirms, False otherwise
         """
+        # If "allow all" mode is enabled, automatically approve
+        if self.allow_all_tools:
+            console.print(f"[dim]✓ Auto-approved: {tool_name} (allow all mode)[/dim]")
+            return True
+
+        # Display tool information
         console.print(f"\n[yellow]⚠️  Tool Confirmation Required[/yellow]")
         console.print(f"[info]Tool:[/info] [cyan]{tool_name}[/cyan]")
         console.print(f"[info]Description:[/info] {tool_description}")
@@ -62,10 +72,48 @@ class ChatAgentCLI:
                 value_str = value_str[:100] + "..."
             console.print(f"  • {key}: {value_str}")
 
-        # Ask for confirmation
-        confirmed = Confirm.ask("\n[bold]Do you want to execute this tool?[/bold]", default=False)
+        # Display menu with better formatting
+        console.print("\n[bold]Choose an option:[/bold]")
+        console.print(" [green]1[/green]. Yes")
+        console.print(" [green]2[/green]. Yes, allow all tools during this session")
+        console.print(" [red]3[/red]. No")
+        console.print("\n[dim]Press 1, 2, or 3 (single key, no Enter needed) · Esc to cancel[/dim]", end=" ")
 
-        return confirmed
+        # Get single-key input using readchar
+        while True:
+            try:
+                key = readchar.readkey()
+
+                # Handle number keys
+                if key == "1":
+                    console.print("\n[green]✓ Executing tool[/green]")
+                    return True
+                elif key == "2":
+                    self.allow_all_tools = True
+                    console.print("\n[green]✓ Executing tool (allow all mode enabled for this session)[/green]")
+                    return True
+                elif key == "3":
+                    console.print("\n[red]✗ Cancelled[/red]")
+                    return False
+                # Handle Esc key
+                elif key == readchar.key.ESC:
+                    console.print("\n[red]✗ Cancelled[/red]")
+                    return False
+                # Handle Ctrl+C
+                elif key == readchar.key.CTRL_C:
+                    console.print("\n[red]✗ Cancelled[/red]")
+                    return False
+                # Ignore other keys
+                else:
+                    continue
+
+            except KeyboardInterrupt:
+                console.print("\n[red]✗ Cancelled[/red]")
+                return False
+            except Exception as e:
+                # Fallback to cancelled on any error
+                console.print(f"\n[red]✗ Cancelled (error: {e})[/red]")
+                return False
 
     def print_welcome(self):
         """Print welcome message."""
@@ -80,10 +128,11 @@ A CLI chat agent with tools and skills support.
 **Commands:**
 - `/help` - Show help message
 - `/model` - List or switch models
-- `/clear` - Clear conversation history
+- `/clear` - Clear conversation and reset confirmation
 - `/status` - Show conversation status
 - `/skills` - List available skills
 - `/memory` - Show saved memories
+- `/reset-confirm` - Reset tool confirmation only
 - `/exit` or `/quit` - Exit the program
 
 **Features:**
@@ -110,10 +159,13 @@ All commands start with `/`:
 - `/model` - List available models or switch model
   - `/model` - Show current model and available models
   - `/model <name>` - Switch to specified model
-- `/clear` - Clear conversation history
+- `/clear` - Clear conversation history and reset confirmation mode
+  - Also resets "allow all" mode to prompt for each tool
 - `/status` - Show conversation status
 - `/skills` - List available skills
 - `/memory` - Show saved memories
+- `/reset-confirm` - Reset tool confirmation to prompt mode
+  - Use this if you enabled "allow all" mode (without clearing history)
 - `/exit` or `/quit` - Exit the program
 
 **Available Tools:**
@@ -170,7 +222,14 @@ Type `/skills` to see available skills, or ask the agent to activate a specific 
     def show_status(self):
         """Show conversation status."""
         summary = self.agent.get_conversation_summary()
-        console.print(f"\n[info]Status:[/info] {summary}\n")
+        console.print(f"\n[info]Status:[/info] {summary}")
+
+        # Show tool confirmation status
+        if self.allow_all_tools:
+            console.print("[info]Tool Confirmation:[/info] [green]Allow all mode enabled[/green]")
+        else:
+            console.print("[info]Tool Confirmation:[/info] [yellow]Prompt for each tool[/yellow]")
+        console.print()
 
     def show_memories(self):
         """Show saved memories."""
@@ -267,7 +326,9 @@ Type `/skills` to see available skills, or ask the agent to activate a specific 
 
                     elif command == "clear":
                         self.agent.clear_history()
-                        console.print("\n[success]Conversation history cleared.[/success]\n")
+                        self.allow_all_tools = False  # Reset confirmation mode
+                        console.print("\n[success]Conversation history cleared.[/success]")
+                        console.print("[info]Tool confirmation reset to prompt mode.[/info]\n")
                         continue
 
                     elif command == "status":
@@ -284,6 +345,14 @@ Type `/skills` to see available skills, or ask the agent to activate a specific 
 
                     elif command == "model":
                         self.handle_model_command(args)
+                        continue
+
+                    elif command == "reset-confirm":
+                        if self.allow_all_tools:
+                            self.allow_all_tools = False
+                            console.print("\n[success]Tool confirmation reset. Will prompt for each tool.[/success]\n")
+                        else:
+                            console.print("\n[info]Tool confirmation is already in prompt mode.[/info]\n")
                         continue
 
                     else:
