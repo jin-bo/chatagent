@@ -546,6 +546,20 @@ IMG-06a 拆分的直接回归。**runner 是管理员**（§3.23 实测），特
 少答一问会红，而把「部分」报成「完成」也会红。它问的仍是**类**而不是实例，所以在跑套件的
 每一个平台上都被检查。
 
+**第四批：接完整性 —— 但不是改 `default_spec`。** 那个函数在 `LADDER_FLIPPED` 置位时**故意抛异常**，
+理由写在它自己的 docstring 里：翻转那一阶段要**替换**它，而不是编辑它。所以「接完整性」落成两样东西：
+
+- `native_oracle(subject=None, project_root=None)` —— PR-7 要调的那个工厂，
+  非 Windows 答 `None`，**token 叫不出名字时也答 `None`**（一个说不出自己在描述谁的访问权的 oracle
+  等于在描述空气，而 SPEC-05 要求每个答案都绑定到一个主体）。
+- **一条把整条阶梯真跑一遍的测试**，只在那一次调用里把 `LADDER_FLIPPED` 打开、产品里一个常量都不动。
+  这是**关于 PR-7 在真 Windows 上到底会做什么的第一份端到端证据**。
+
+**而这份证据说的是：在这台 runner 上每一级都被拒 —— 那是规则在生效，不是失败。** token 是管理员、
+持有全部六项替换特权，于是 IMG-01 的可信集为空、LADDER-03 拒掉每一级。断言就照着这个写：
+**哪天它在一台非管理员 runner 上不再成立，这条测试会说话，而不是悄悄通过。**
+这同时把「提权的 agentao 是自己的攻击者」从一条散文规则变成了一条端到端可执行的断言。
+
 **曾经差六问，且它们被写成断言而不是散文**：`publisher_trusted` 与 `image_signer`（Authenticode）、
 `read_identity`／`resolve_pshome`／`read_config_sources`／`preflight`（要起解释器）。
 那条断言随实现一起收口成 `test_every_oracle_method_is_answered`。

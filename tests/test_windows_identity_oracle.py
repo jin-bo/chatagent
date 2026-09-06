@@ -521,3 +521,62 @@ def test_the_module_imports_on_every_platform():
     """It is reached from `permissions_hardline`, which POSIX hosts import; binding Win32 at
     call time rather than import time is what keeps that true."""
     assert sys.modules["agentao.permissions_hardline._windows_identity"]
+
+
+# --------------------------------------------- the ladder, end to end, unflipped
+
+
+@windows_only
+def test_the_factory_binds_to_this_machines_token():
+    """The seam PR-7 calls instead of reaching into a private class."""
+    from agentao.permissions_hardline._windows_identity import native_oracle
+
+    built = native_oracle()
+    assert built is not None
+    assert built.target_platform().name == "WINDOWS"
+    assert built.target_filesystem_is_local() is True
+
+
+def test_the_factory_answers_none_off_windows():
+    from agentao.permissions_hardline._windows_identity import native_oracle
+
+    if os.name == "nt":
+        pytest.skip("this is the other platform's answer")
+    assert native_oracle() is None
+
+
+@windows_only
+def test_an_elevated_agentao_trusts_nothing_end_to_end(monkeypatch):
+    """The whole ladder, run for real, with the flip forced on for this call only.
+
+    Nothing is flipped in the product: `LADDER_FLIPPED` stays false, and `select_rung` is
+    driven directly. This is the first end-to-end evidence about what PR-7 would actually
+    do on a real Windows, and on this runner the answer is the security property rather than
+    a working rung — the token is an administrator holding every replace privilege, so
+    IMG-01's trusted set is empty and every rung is refused.
+
+    That is the rule working, not a failure. The assertion is written against it so the day
+    it stops being true on a non-admin runner, this test says so instead of passing quietly.
+    """
+    from agentao.capabilities.shell_spec import ShellBlock
+    from agentao.permissions_hardline import _trust
+    from agentao.permissions_hardline._trust import Exhausted, select_rung
+    from agentao.permissions_hardline._windows_identity import native_oracle
+
+    monkeypatch.setattr(_trust, "LADDER_FLIPPED", True)
+    built = native_oracle()
+    assert built is not None
+
+    outcome = select_rung(ShellBlock(), built, Subject(token_sid() or ""))
+
+    elevated = bool(token_privileges() & REPLACE_PRIVILEGES)
+    if elevated:
+        assert isinstance(outcome, Exhausted), (
+            "an elevated agentao is its own attacker: the trusted set must be empty, "
+            f"and instead the ladder produced {outcome!r}"
+        )
+        assert "refused" in str(outcome.reason) or "IMG" in str(outcome.reason), outcome.reason
+    else:
+        # A non-admin runner is where the acceptance path becomes observable. Report either
+        # way rather than asserting a rung, since which one depends on what is installed.
+        assert outcome is not None

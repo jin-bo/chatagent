@@ -50,6 +50,7 @@ from ._trust import ReparseResult, ReparseState, SessionConfig
 
 __all__ = [
     "ANCESTOR_MASK",
+    "native_oracle",
     "REPLACE_PRIVILEGES",
     "TARGET_DIRECTORY_MASK",
     "TARGET_FILE_MASK",
@@ -1095,3 +1096,27 @@ class WindowsAccessOracle:
             return bool(granted.value & mask)
         finally:
             self._kernel32.LocalFree(descriptor)
+
+
+def native_oracle(
+    subject: Optional[Subject] = None, project_root: Optional[str] = None
+) -> Optional[WindowsAccessOracle]:
+    r"""The oracle for this machine, or ``None`` where there is not one.
+
+    The seam PR-7 needs. Rung selection is the ladder's job and ``default_spec`` refuses to do
+    it once the flip is set — deliberately, so the stage that flips the constant *replaces*
+    that function rather than editing it. This exists so that stage has a factory to call
+    instead of reaching into a private class.
+
+    ``None`` off Windows, and ``None`` when the token cannot be named: an oracle that could
+    not say whose access it was describing would be answering about nothing in particular,
+    and SPEC-05 binds every answer to one subject.
+    """
+    if os.name != "nt":
+        return None
+    if subject is None:
+        sid = token_sid()
+        if sid is None:
+            return None
+        subject = Subject(sid)
+    return WindowsAccessOracle(subject, project_root)
