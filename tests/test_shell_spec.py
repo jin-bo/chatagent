@@ -708,15 +708,43 @@ def test_the_fallback_spec_is_one_object_per_executor():
     assert tool.shell_spec is not first
 
 
-def test_flipping_the_ladder_constant_is_loud_rather_than_silent(monkeypatch):
-    """LADDER-05: a constant that changes nothing when flipped is worse than no constant.
+def test_turning_the_ladder_on_selects_a_rung_instead_of_raising(monkeypatch):
+    """PR-7a: the ladder is reachable now, so this function selects rather than refuses.
 
-    Someone sets it to True to try the post-flip path, gets the pre-flip answer, and
-    concludes the flip already works. Selecting a rung is the ladder's job, and the ladder
-    does not exist yet, so saying so is the only honest answer this function has.
+    It used to raise ``NotImplementedError`` — deliberately, because a constant that changes
+    nothing when flipped is worse than no constant. That answer stopped being honest once the
+    ladder could actually run, and the replacement has to be a *verdict*: an exception inside
+    the floor carries no reason and is not on the DENY channel at all (method rule 22).
+
+    Off this host the verdict is `Exhausted`, because a Windows target needs the native
+    oracle and there is not one here. That is the same shape a real Windows host produces
+    when the ladder runs empty, which is what LADDER-03 turns into a refusal.
     """
     import agentao.capabilities.shell_spec as ss
 
     monkeypatch.setattr(ss, "LADDER_FLIPPED", True)
-    with pytest.raises(NotImplementedError, match="ladder"):
-        ss.default_spec(windows=True)
+    out = ss.default_spec(windows=True)
+    assert isinstance(out, ss.Exhausted), out
+    assert "oracle" in out.reason, out.reason
+
+
+def test_a_windows_target_on_a_posix_host_refuses_before_it_touches_ctypes():
+    """The guard is on the *host*, and it has to sit before both calls rather than between.
+
+    ``native_oracle`` answers ``None`` off Windows by contract, but ``token_sid`` is bare
+    ``ctypes`` with no such guard and raises ``AttributeError`` on its first ``WinDLL``. An
+    exception is not a verdict, so the order of these two matters.
+    """
+    from agentao.capabilities.shell_spec import Exhausted, ShellBlock, default_spec
+
+    out = default_spec(ShellBlock(ladder=True), windows=True)
+    assert isinstance(out, Exhausted) and "oracle" in out.reason
+
+
+def test_the_posix_target_says_so_rather_than_reporting_an_empty_ladder():
+    """LADDER-01 is a Windows ladder. Answering `Exhausted` with a Windows reason on Linux
+    would send a reader looking for an interpreter that was never in question."""
+    from agentao.capabilities.shell_spec import Exhausted, ShellBlock, default_spec
+
+    out = default_spec(ShellBlock(ladder=True), windows=False)
+    assert isinstance(out, Exhausted) and "Windows-only" in out.reason

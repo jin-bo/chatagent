@@ -200,3 +200,75 @@ def test_every_composition_root_reads_the_same_record():
         text = Path(module.__file__).read_text(encoding="utf-8")
         assert "load_permission_config" in text, module.__name__
         assert "load_permission_rules(" not in text, module.__name__
+
+# ------------------------------------------------------------------ PR-7a: it reaches the runtime
+
+
+def test_the_block_changes_what_the_local_executor_reports():
+    """The whole point of PR-7a: the key had a parser and no consumer.
+
+    ``shell.ladder`` validated, loaded and reached nothing — the escape hatch existed in
+    configuration and not in the process. Off Windows the ladder answers ``Exhausted``,
+    because a Windows target needs the native oracle; what matters here is that the two
+    answers *differ*, which is what a value with a consumer looks like.
+    """
+    from agentao.capabilities import LocalShellExecutor
+    from agentao.capabilities.shell_spec import Exhausted, ShellBlock, ShellSpec
+
+    unset = LocalShellExecutor().shell_spec
+    on = LocalShellExecutor(shell_block=ShellBlock(ladder=True)).shell_spec
+    off = LocalShellExecutor(shell_block=ShellBlock(ladder=False)).shell_spec
+
+    assert isinstance(unset, ShellSpec)
+    assert isinstance(off, ShellSpec) and off.rung is unset.rung
+    assert isinstance(on, Exhausted), on
+
+
+def test_the_executor_reports_one_spec_object_per_call(monkeypatch):
+    """SPEC-07b: a call holds one spec until re-resolution swaps it.
+
+    Minting a fresh one per read would also re-run the ladder per read, which on Windows
+    means a fresh ``AccessCheck`` walk to the volume root on every shell call.
+    """
+    from agentao.capabilities import LocalShellExecutor
+
+    executor = LocalShellExecutor()
+    assert executor.shell_spec is executor.shell_spec
+
+
+def test_the_factory_gives_the_executor_the_block_it_loaded(tmp_path, monkeypatch):
+    """CFG-03: the block travels with the rules, and now it lands somewhere.
+
+    Asserted through the factory rather than by calling the loader and the constructor in
+    sequence, because composing them by hand is a restatement of the code rather than a test
+    of it — the question is whether the composition root actually does it.
+    """
+    from unittest.mock import Mock, patch
+
+    from agentao.capabilities import LocalShellExecutor
+    from agentao.embedding import build_from_environment
+
+    # The loader reads the *user* scope, which is ``~/.agentao``, so the file has to land
+    # where ``user_root()`` will look rather than beside the project.
+    user_dir = tmp_path / ".agentao"
+    user_dir.mkdir()
+    write_config(user_dir, {"rules": [], "shell": {"ladder": True}})
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    with patch("agentao.agent.LLMClient") as mock_llm_cls:
+        mock_llm = Mock()
+        mock_llm.logger = Mock()
+        mock_llm.model = "gpt-test"
+        mock_llm.api_key = "test-key"
+        mock_llm.base_url = "https://api.example.com/v1"
+        mock_llm.temperature = 0.2
+        mock_llm_cls.return_value = mock_llm
+        agent = build_from_environment(working_directory=tmp_path)
+
+    assert isinstance(agent.shell, LocalShellExecutor)
+    assert agent.shell._shell_block is not None
+    assert agent.shell._shell_block.ladder is True

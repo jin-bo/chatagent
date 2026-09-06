@@ -594,7 +594,11 @@ def local_subject() -> Subject:
             return Subject("")
 
 
-def default_spec(windows: Optional[bool] = None, local: bool = False) -> ShellSpec:
+def default_spec(
+    config: Optional["ShellBlock"] = None,
+    windows: Optional[bool] = None,
+    local: bool = False,
+) -> Union[ShellSpec, Exhausted]:
     """The policy-off rung every platform reports until the ladder is turned on (LADDER-05).
 
     Windows answers ``CMD x legacy_cmd``: today's ``%COMSPEC% /c``, today's environment and
@@ -610,22 +614,46 @@ def default_spec(windows: Optional[bool] = None, local: bool = False) -> ShellSp
     the assumption every identity check rests on, so a caller that forgets to say must not be
     handed it. Both call sites declare it.
     """
+    import os as _os
     import sys as _sys
 
-    if ladder_enabled(ShellBlock()):
-        raise NotImplementedError(
-            "LADDER_FLIPPED is set, but rung selection is the ladder's job and the ladder is "
-            "not implemented yet. This function is only the pre-flip default; the stage that "
-            "flips the constant replaces it with the real selection rather than editing it."
-        )
     from ..permissions_hardline._trust import select_rung
 
+    block = config if config is not None else ShellBlock()
     if windows is None:
         windows = _sys.platform == "win32"
     target = Platform.WINDOWS if windows else Platform.POSIX
-    spec = select_rung(ShellBlock(), _PlatformOnlyOracle(target, local), local_subject())
-    assert isinstance(spec, ShellSpec)  # the two policy-off branches always return a spec
-    return spec
+
+    if not ladder_enabled(block):
+        spec = select_rung(block, _PlatformOnlyOracle(target, local), local_subject())
+        assert isinstance(spec, ShellSpec)  # the two policy-off branches always return a spec
+        return spec
+
+    # The ladder is on, which every rung needs a *complete* oracle for (SPEC-05c). The
+    # platform-only stub answers two questions and would empty the ladder, and LADDER-03 turns
+    # an empty ladder into a denial of every shell call — so the stub is not a fallback here.
+    if target is not Platform.WINDOWS:
+        return Exhausted("LADDER-01: the ladder is Windows-only; POSIX stays on system_posix")
+    if _os.name != "nt":
+        # A Windows *target* on a non-Windows *host*. ``native_oracle`` answers ``None`` here
+        # by contract, but ``token_sid`` is bare ``ctypes`` with no such guard and raises
+        # ``AttributeError`` on the first ``WinDLL`` — and method rule 22 is that an exception
+        # inside the floor is not a verdict. The check goes before either call, not between.
+        return Exhausted("SPEC-05c: no identity oracle on this host")
+    from ..permissions_hardline._windows_identity import native_oracle, token_sid
+
+    # SPEC-05 binds every answer to one subject, and the two spellings do not agree on
+    # Windows: ``local_subject`` falls back to a *login name* there while the oracle reasons
+    # about a *SID*. Deriving it once and handing the same value to both is what keeps the
+    # oracle from refusing every question it is asked about somebody else.
+    sid = token_sid()
+    if sid is None:
+        return Exhausted("SPEC-05: the child's token cannot be named")
+    subject = Subject(sid)
+    oracle = native_oracle(subject)
+    if oracle is None:
+        return Exhausted("SPEC-05c: no identity oracle on this platform")
+    return select_rung(block, oracle, subject)
 
 
 class _PlatformOnlyOracle:

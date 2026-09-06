@@ -191,6 +191,13 @@ def build_from_environment(
         # resolution does — but a value nobody can reach is a value nobody adds.
         permission_config = load_permission_config(project_root=wd, user_root=ur)
         rules, loaded_sources = permission_config.rules, permission_config.sources
+        # CFG-01 / G09-02: the shell block finally has a consumer. Without this the
+        # ``shell.ladder`` key parses, validates and reaches nothing — the escape hatch
+        # would exist in configuration and not in the process.
+        if permission_config.shell is not None and overrides.get("shell") is None:
+            from ..capabilities import LocalShellExecutor
+
+            overrides["shell"] = LocalShellExecutor(shell_block=permission_config.shell)
         permission_engine = PermissionEngine(
             project_root=wd,
             user_root=ur,
