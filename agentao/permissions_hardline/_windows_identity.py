@@ -542,9 +542,15 @@ class WindowsAccessOracle:
         r"""IMG-05 route (1): does this machine's own trust store vouch for the image.
 
         ``WinVerifyTrust`` under the generic-verify action is exactly that question: the
-        signature must be intact *and* chain to a root this machine trusts, with revocation
-        consulted. Anything short of ``ERROR_SUCCESS`` is a no — including "no signature",
-        "untrusted root", and "the check could not run".
+        signature must be intact *and* chain to a root this machine trusts. Anything short of
+        ``ERROR_SUCCESS`` is a no — including "no signature", "untrusted root", and "the
+        check could not run".
+
+        **Embedded first, then the catalog.** Most of Windows is not signed in the file: a
+        system binary's signature lives in a ``.cat`` under the catalog database, and a check
+        that reads only the embedded PKCS#7 reports ``cmd.exe`` and ``powershell.exe`` as
+        unsigned — which would make this route decorative for the exact interpreters the
+        ladder targets. Measured on the Windows job, which is where it surfaced.
         """
         return self._verify_trust(path) == 0
 
@@ -558,7 +564,13 @@ class WindowsAccessOracle:
         """
         if self._verify_trust(path) != 0:
             return None
-        return self._signer_name(path)
+        embedded = self._signer_name(path)
+        if embedded is not None:
+            return embedded
+        # A catalog-signed file carries no PKCS#7 of its own; the signature is on the
+        # catalog, so that is where its signer's name is.
+        catalog = self._catalog_for(path)
+        return None if catalog is None else self._signer_name(catalog[0])
 
     # -------------------------------------------------------------- the interpreter
 
@@ -676,6 +688,15 @@ class WindowsAccessOracle:
         return status
 
     def _verify_trust_uncached(self, path: str) -> int:
+        embedded = self._verify_embedded(path)
+        if embedded == 0:
+            return embedded
+        catalog = self._catalog_for(path)
+        if catalog is None:
+            return embedded
+        return self._verify_catalog(path, *catalog)
+
+    def _verify_embedded(self, path: str) -> int:
         try:
             wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
         except OSError:
@@ -718,6 +739,132 @@ class WindowsAccessOracle:
             wintypes.HANDLE, ctypes.POINTER(_GUID), ctypes.c_void_p]
         status = wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
         data.dwStateAction = 2         # WTD_STATEACTION_CLOSE
+        wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
+        return int(status)
+
+    def _catalog_for(self, path: str) -> Optional[Tuple[str, str]]:
+        """``(catalog file, member tag)`` for a catalog-signed file, or ``None``.
+
+        The member tag is the file's hash as uppercase hex, which is how a catalog names its
+        members; ``WinVerifyTrust`` needs both to check one file against one catalog.
+        """
+        try:
+            wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
+            kernel32 = self._kernel32
+        except OSError:
+            return None
+
+        GENERIC_READ = 0x80000000
+        FILE_SHARE_READ = 0x00000001
+        OPEN_EXISTING = 3
+
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        handle = kernel32.CreateFileW(
+            path, GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING, 0, None)
+        if handle in (None, wintypes.HANDLE(-1).value, -1, 0xFFFFFFFFFFFFFFFF):
+            return None
+        try:
+            size = wintypes.DWORD(0)
+            wintrust.CryptCATAdminCalcHashFromFileHandle.restype = wintypes.BOOL
+            wintrust.CryptCATAdminCalcHashFromFileHandle(
+                wintypes.HANDLE(handle), ctypes.byref(size), None, 0)
+            if size.value == 0:
+                return None
+            digest = (ctypes.c_ubyte * size.value)()
+            if not wintrust.CryptCATAdminCalcHashFromFileHandle(
+                wintypes.HANDLE(handle), ctypes.byref(size), digest, 0,
+            ):
+                return None
+        finally:
+            kernel32.CloseHandle(wintypes.HANDLE(handle))
+
+        admin = ctypes.c_void_p()
+        wintrust.CryptCATAdminAcquireContext.restype = wintypes.BOOL
+        if not wintrust.CryptCATAdminAcquireContext(ctypes.byref(admin), None, 0):
+            return None
+        try:
+            wintrust.CryptCATAdminEnumCatalogFromHash.restype = ctypes.c_void_p
+            info = wintrust.CryptCATAdminEnumCatalogFromHash(
+                admin, digest, size, 0, None)
+            if not info:
+                return None
+            try:
+                class _CATALOG_INFO(ctypes.Structure):
+                    _fields_ = [("cbStruct", wintypes.DWORD),
+                                ("wszCatalogFile", ctypes.c_wchar * 260)]
+
+                details = _CATALOG_INFO()
+                details.cbStruct = ctypes.sizeof(_CATALOG_INFO)
+                wintrust.CryptCATCatalogInfoFromContext.restype = wintypes.BOOL
+                if not wintrust.CryptCATCatalogInfoFromContext(
+                    ctypes.c_void_p(info), ctypes.byref(details), 0,
+                ):
+                    return None
+                tag = "".join(f"{b:02X}" for b in digest)
+                return details.wszCatalogFile, tag
+            finally:
+                wintrust.CryptCATAdminReleaseCatalogContext(
+                    admin, ctypes.c_void_p(info), 0)
+        finally:
+            wintrust.CryptCATAdminReleaseContext(admin, 0)
+
+    def _verify_catalog(self, path: str, catalog: str, tag: str) -> int:
+        try:
+            wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
+        except OSError:
+            return -1
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                        ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+        class _CATALOG_INFO_W(ctypes.Structure):
+            _fields_ = [
+                ("cbStruct", wintypes.DWORD), ("dwCatalogVersion", wintypes.DWORD),
+                ("pcwszCatalogFilePath", wintypes.LPCWSTR),
+                ("pcwszMemberTag", wintypes.LPCWSTR),
+                ("pcwszMemberFilePath", wintypes.LPCWSTR),
+                ("hMemberFile", wintypes.HANDLE),
+                ("pbCalculatedFileHash", ctypes.c_void_p),
+                ("cbCalculatedFileHash", wintypes.DWORD),
+                ("pcCatalogContext", ctypes.c_void_p),
+                ("hCatAdmin", ctypes.c_void_p),
+            ]
+
+        class _WINTRUST_DATA(ctypes.Structure):
+            _fields_ = [
+                ("cbStruct", wintypes.DWORD), ("pPolicyCallbackData", ctypes.c_void_p),
+                ("pSIPClientData", ctypes.c_void_p), ("dwUIChoice", wintypes.DWORD),
+                ("fdwRevocationChecks", wintypes.DWORD), ("dwUnionChoice", wintypes.DWORD),
+                ("pCatalog", ctypes.POINTER(_CATALOG_INFO_W)),
+                ("dwStateAction", wintypes.DWORD),
+                ("hWVTStateData", wintypes.HANDLE), ("pwszURLReference", wintypes.LPWSTR),
+                ("dwProvFlags", wintypes.DWORD), ("dwUIContext", wintypes.DWORD),
+                ("pSignatureSettings", ctypes.c_void_p),
+            ]
+
+        action = _GUID(0xAAC56B, 0xCD44, 0x11D0,
+                       (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE))
+        info = _CATALOG_INFO_W()
+        info.cbStruct = ctypes.sizeof(_CATALOG_INFO_W)
+        info.pcwszCatalogFilePath = catalog
+        info.pcwszMemberTag = tag
+        info.pcwszMemberFilePath = path
+        data = _WINTRUST_DATA()
+        data.cbStruct = ctypes.sizeof(_WINTRUST_DATA)
+        data.dwUIChoice = 2            # WTD_UI_NONE
+        data.fdwRevocationChecks = 0
+        data.dwUnionChoice = 2         # WTD_CHOICE_CATALOG
+        data.pCatalog = ctypes.pointer(info)
+        data.dwStateAction = 1
+        wintrust.WinVerifyTrust.restype = wintypes.LONG
+        wintrust.WinVerifyTrust.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(_GUID), ctypes.c_void_p]
+        status = wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
+        data.dwStateAction = 2
         wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
         return int(status)
 
