@@ -169,7 +169,9 @@ def _parse_shell_block(raw: Any, path: Path) -> Optional[ShellBlock]:
         return None
     if not isinstance(raw, dict):
         raise PermissionConfigError(path, f"'shell' must be an object, got {type(raw).__name__}")
-    unknown = sorted(set(raw) - {"path", "dialect", "allow_git_bash", "allowlist", "env_passthrough"})
+    unknown = sorted(
+        set(raw) - {"path", "dialect", "allow_git_bash", "allowlist", "env_passthrough", "ladder"}
+    )
     if unknown:
         raise PermissionConfigError(
             path,
@@ -194,6 +196,9 @@ def _parse_shell_block(raw: Any, path: Path) -> Optional[ShellBlock]:
         path=AbsPath(str(path_value)) if path_value is not None else None,
         dialect=dialect,
         allow_git_bash=bool(raw.get("allow_git_bash", False)),
+        # G09-02: absent stays ``None``. Reading it as ``False`` would make every
+        # unconfigured host opt *out* of the flip on the day it ships.
+        ladder=None if raw.get("ladder") is None else bool(raw["ladder"]),
         allowlist=_parse_allowlist(raw.get("allowlist"), path),
         env_passthrough=tuple(raw.get("env_passthrough", ()) or ()),
     )

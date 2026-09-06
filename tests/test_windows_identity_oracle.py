@@ -546,28 +546,31 @@ def test_the_factory_answers_none_off_windows():
 
 
 @windows_only
-def test_an_elevated_agentao_trusts_nothing_end_to_end(monkeypatch):
-    """The whole ladder, run for real, with the flip forced on for this call only.
+def test_an_elevated_agentao_trusts_nothing_end_to_end():
+    """The whole ladder, run for real, with the flip on for this call only.
 
-    Nothing is flipped in the product: `LADDER_FLIPPED` stays false, and `select_rung` is
-    driven directly. This is the first end-to-end evidence about what PR-7 would actually
-    do on a real Windows, and on this runner the answer is the security property rather than
-    a working rung — the token is an administrator holding every replace privilege, so
-    IMG-01's trusted set is empty and every rung is refused.
+    Nothing is flipped in the product: the built-in default stays false and only this call's
+    block says otherwise, which since G09-02 is the way a user turns it on too. It used to
+    monkeypatch `_trust.LADDER_FLIPPED`, a name that module no longer holds — and patching a
+    re-exported constant was always the weaker seam, because the copy you patch is not
+    necessarily the copy the code reads.
+
+    This is the first end-to-end evidence about what PR-7 would actually do on a real
+    Windows, and on this runner the answer is the security property rather than a working
+    rung — the token is an administrator holding every replace privilege, so IMG-01's trusted
+    set is empty and every rung is refused.
 
     That is the rule working, not a failure. The assertion is written against it so the day
     it stops being true on a non-admin runner, this test says so instead of passing quietly.
     """
     from agentao.capabilities.shell_spec import ShellBlock
-    from agentao.permissions_hardline import _trust
     from agentao.permissions_hardline._trust import Exhausted, select_rung
     from agentao.permissions_hardline._windows_identity import native_oracle
 
-    monkeypatch.setattr(_trust, "LADDER_FLIPPED", True)
     built = native_oracle()
     assert built is not None
 
-    outcome = select_rung(ShellBlock(), built, Subject(token_sid() or ""))
+    outcome = select_rung(ShellBlock(ladder=True), built, Subject(token_sid() or ""))
 
     elevated = bool(token_privileges() & REPLACE_PRIVILEGES)
     if elevated:

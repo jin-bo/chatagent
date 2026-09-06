@@ -78,7 +78,7 @@ LEGAL_PAIRS: Mapping[ShellDialect, frozenset[Rung]] = MappingProxyType(  # SPEC-
 POLICY_OFF_RUNGS: frozenset[Rung] = frozenset({Rung.system_posix, Rung.legacy_cmd})  # SPEC-03
 POWERSHELL_RUNGS: frozenset[Rung] = frozenset({Rung.pwsh, Rung.powershell})
 GIT_BASH_RELEASED = False  # LADDER-04：PR-7 只在 G20 绿时置真；为假时 allow_git_bash 与显式 posix 来源都被拒（CFG-02）
-LADDER_FLIPPED = False  # LADDER-05：翻转（PR-7）之前阶梯不运行，Windows 默认报 CMD × legacy_cmd；PR-7 置真并删除 legacy_cmd
+LADDER_FLIPPED = False  # LADDER-05：**内建**答案；翻转（PR-7）之前阶梯不运行，Windows 默认报 CMD × legacy_cmd；PR-7 置真并删除 legacy_cmd
 
 
 def dialect_of(rung: Rung) -> ShellDialect:
@@ -323,6 +323,16 @@ class ShellBlock:  # 用户级 shell 块 / 构造 spec（CFG-01：来源只有�
     allow_git_bash: bool = False  # LADDER-02
     allowlist: Allowlist = ()  # IMG-03
     env_passthrough: tuple[EnvKey, ...] = ()  # ENV-06 (2)：默认集之外要透传的**字面键名**；ENV-03 的保留键在这里无效，含 * 的条目丢弃
+    ladder: bool | None = None  # G09-02：阶梯开关，可由用户级配置读回 —— `None` 是**未设**、跟随内建，不是「关」
+
+
+def ladder_enabled(config: ShellBlock) -> bool:  # LADDER-05 / G09-02
+    """阶梯跑不跑：配置优先，未设则跟随内建。两个读者（`select_rung`、`default_spec`）共用这一处。
+
+    经配置**打开**在发布之前不受支持、且可能拒掉每一次 shell 调用（LADDER-03 把走空的阶梯变成拒绝）——
+    这是明知的代价，不加护栏：同一个设置就是退路，而只有发版才够得着的退路不叫退路。
+    """
+    return LADDER_FLIPPED if config.ladder is None else config.ladder
 
 ConstructorSpec = ShellBlock  # 构造参数（shell_dialect= / shell_path=）与用户级块同形；CFG-02 按来源整体取胜
 
@@ -1276,7 +1286,7 @@ def select_rung(config: ShellBlock, oracle: IdentityOracle, subject: Subject) ->
     # 而 LADDER-03 会把「走空」变成每次 shell 调用 DENY，与 LADDER-05 / SPEC-03 的「与今天逐段相同」相反。
     if T is Platform.POSIX:  # 现有 POSIX 主机今天的那个 shell（SPEC-03 政策关闭，直到 q4 定案）
         return legacy_spec(ShellDialect.POSIX, Rung.system_posix, T, subject, local)
-    if not LADDER_FLIPPED:  # LADDER-05：翻转前 Windows 的默认执行器报 CMD × legacy_cmd，阶梯只在翻转后运行
+    if not ladder_enabled(config):  # LADDER-05 / G09-02：先看配置，再看内建
         return legacy_spec(ShellDialect.CMD, Rung.legacy_cmd, T, subject, local)
     if not oracle_complete(oracle):
         return Exhausted("SPEC-05c: incomplete oracle")  # 阶梯每一级都要认证；政策关闭的两级已在上面返回（SPEC-05c 末句）

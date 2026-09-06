@@ -81,9 +81,11 @@ POWERSHELL_RUNGS: frozenset = frozenset({Rung.pwsh, Rung.powershell})
 # a git_bash rung yet, so this cannot mislead in the meantime.
 GIT_BASH_RELEASED = False
 # LADDER-05: before the flip the ladder does not run at all and Windows reports legacy_cmd.
-# `default_spec` reads this. It has to read *something*, because a constant that changes no
-# behaviour when you flip it is worse than no constant: someone sets it to True to try the
-# post-flip path, sees the pre-flip answer, and concludes the flip is already done.
+# This is the *built-in* answer; `ShellBlock.ladder` overrides it per configuration and
+# `ladder_enabled` is the one place the two are combined. It has to be read by something,
+# because a constant that changes no behaviour when you flip it is worse than no constant:
+# someone sets it to True to try the post-flip path, sees the pre-flip answer, and concludes
+# the flip is already done.
 LADDER_FLIPPED = False
 
 
@@ -549,12 +551,33 @@ class ShellBlock:
     allow_git_bash: bool = False  # LADDER-02; read before the last rung is chosen
     allowlist: Allowlist = ()
     env_passthrough: Tuple[EnvKey, ...] = ()
+    # G09-02: the flip, readable from configuration so the way back is not a release.
+    # ``None`` is not the same value as ``False``. Unset has to stay distinguishable from
+    # "turned off", because once ``LADDER_FLIPPED`` becomes True the unset case must follow
+    # it, and a plain ``bool`` would silently pin every unconfigured host to the old
+    # behaviour — the release would ship to nobody.
+    ladder: Optional[bool] = None
 
     def incomplete(self) -> Optional[str]:
         """CFG-02: the half that is missing, or ``None`` when the pair is consistent."""
         if (self.path is None) == (self.dialect is None):
             return None
         return "dialect" if self.dialect is None else "path"
+
+
+def ladder_enabled(config: "ShellBlock") -> bool:
+    """LADDER-05 / G09-02: whether the ladder runs, from configuration or the built-in.
+
+    One function because two readers ask it — ``select_rung`` and ``default_spec`` — and a
+    flag resolved differently in two places is the defect method rule 26 names.
+
+    Turning it **on** through configuration before the release is unsupported and can deny
+    every shell call: LADDER-03 turns an empty ladder into a refusal, and the ladder is empty
+    whenever any rung fails attestation. That is deliberate rather than guarded against. The
+    same setting is the way back, which is the whole reason it is a setting: an escape hatch
+    that only a release can reach is not an escape hatch.
+    """
+    return LADDER_FLIPPED if config.ladder is None else config.ladder
 
 
 def local_subject() -> Subject:
@@ -589,7 +612,7 @@ def default_spec(windows: Optional[bool] = None, local: bool = False) -> ShellSp
     """
     import sys as _sys
 
-    if LADDER_FLIPPED:
+    if ladder_enabled(ShellBlock()):
         raise NotImplementedError(
             "LADDER_FLIPPED is set, but rung selection is the ladder's job and the ladder is "
             "not implemented yet. This function is only the pre-flip default; the stage that "
