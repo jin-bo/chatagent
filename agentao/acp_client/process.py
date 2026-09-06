@@ -13,6 +13,7 @@ from __future__ import annotations
 import collections
 import io
 import logging
+import os
 import queue
 import subprocess
 import sys
@@ -120,6 +121,21 @@ def _read_bounded_lines(
             on_oversize(dropped)
     elif buf:
         yield bytes(buf)
+
+
+#: How long to wait for a just-started server to die before calling it started.
+#:
+#: 50 ms is enough on POSIX, where ``fork``/``exec`` is cheap. It is not enough on Windows,
+#: where creating a process and starting an interpreter routinely takes longer than that —
+#: a server that crashes on startup has not *reached* its crash yet when the window closes,
+#: so the check reports it as running and the failure resurfaces later as a broken pipe.
+#: Measured on the Windows job, where the same test passed on one Python and failed on
+#: another purely on timing.
+#:
+#: The cost is paid by healthy servers, which block for the whole window: ``wait`` returns
+#: early only when the child exits. That is the trade — a slower start for a check that
+#: works — and it is why the longer wait is scoped to the platform that needs it.
+_IMMEDIATE_EXIT_WINDOW_S = 1.0 if os.name == "nt" else 0.05
 
 
 class ACPProcessHandle:
@@ -268,7 +284,7 @@ class ACPProcessHandle:
             # Check for immediate crash (e.g. bad executable path resolved
             # by the OS but the binary exits instantly).
             try:
-                self._proc.wait(timeout=0.05)
+                self._proc.wait(timeout=_IMMEDIATE_EXIT_WINDOW_S)
             except subprocess.TimeoutExpired:
                 pass  # Still running — good.
             else:
