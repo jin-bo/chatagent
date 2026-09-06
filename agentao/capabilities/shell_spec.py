@@ -233,10 +233,6 @@ def is_root_relative(value: str) -> bool:
     return value.startswith("\\") and not value.startswith("\\\\")
 
 
-def drive_root(drive: DriveSpec) -> AbsPath:
-    return AbsPath(drive + "\\")
-
-
 @dataclass(frozen=True, kw_only=True)
 class PinnedEnv:
     """ENV-06 (1): a closed set of named fields, deliberately not an arbitrary mapping.
@@ -333,22 +329,34 @@ class PinnedEnv:
     def system_paths(self) -> Tuple[AbsPath, ...]:
         r"""The system group's paths, each checked against IMG-01 before the spec is built.
 
-        ``public`` (``C:\Users\Public``) is **not** here (ENV-06g): it is a shared *user data*
-        directory, writable by everyone by design, and no rule in this design loads or reads
-        configuration from it. Leaving it in this group would make IMG-06a's ``FILE_ADD_FILE``
-        clause refuse every policy-on rung — one make-weight environment key turning the whole
-        ladder off, over a directory whose contents nothing reads.
+        ENV-06g's criterion is whether a rule depends on the directory's *content*, and three
+        keys had been filed here by how their names read rather than by that test. Each one
+        alone refuses every policy-on rung, because IMG-06a's target mask holds the ADD bits
+        and a stock Windows grants them (evidence §3.23, §3.24):
+
+        * ``public`` (``C:\Users\Public``) — a shared *user data* directory, writable by
+          everyone by design. Moved out in rev 40.
+        * ``program_data`` / ``all_users_profile`` (``C:\ProgramData``) — kept here on the
+          belief that the toolchain reads configuration from it. Measured: git reads exactly
+          one config file and it is under ``Program Files``; a standard user can plant
+          ``C:\ProgramData\Git\config`` and git ignores it; and no other trusted-table
+          program has a directory there at all.
+        * ``system_drive`` (``C:\``) — nothing loads from a volume root, and it is already
+          evaluated on *every* IMG-01 chain, with the ancestor mask rev 47 added for exactly
+          that role. Passing it in as a chain head instead gives it the target mask, whose
+          add-subdirectory bit every stock volume root grants every standard user.
+
+        What stays are the roots something really does load from: the system root, the program
+        directories and ``ComSpec``.
         """
         paths = []
         for value in (
-            self.system_root, self.windir, self.program_data, self.program_files,
+            self.system_root, self.windir, self.program_files,
             self.program_files_x86, self.program_w6432, self.common_program_files,
-            self.common_program_files_x86, self.all_users_profile, self.com_spec,
+            self.common_program_files_x86, self.com_spec,
         ):
             if value is not None:
                 paths.append(AbsPath(value))
-        if self.system_drive is not None:
-            paths.append(drive_root(self.system_drive))
         return tuple(paths)
 
 

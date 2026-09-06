@@ -448,6 +448,57 @@ def test_the_child_path_is_the_sequence_decide_already_filtered():
 # ------------------------------------------------------------------ ENV-06b / ENV-06f
 
 
+# ------------------------------------------------------------------ q14 / ENV-06g
+
+
+# Measured on windows-latest for a standard user (evidence §3.23, §3.24). `writable` stands
+# for IMG-06a's target mask, `relinkable` for the ancestor mask: a stock Windows lets an
+# ordinary user *create* entries in all three and delete or rename none.
+STOCK_ADDABLE = {"C:\\", "C:\\ProgramData", "C:\\Users\\Public"}
+
+
+def test_the_measured_stock_windows_acls_leave_a_rung_attestable():
+    """q14, and the reason it was a blocker rather than a preference.
+
+    ENV-06a checks the pinned system group against IMG-01, and three of its members were
+    filed there by how their names read. On the measured ACLs each one *alone* refused every
+    policy-on rung, so the ladder ran empty and LADDER-03 turned that into a denial of every
+    shell call after the flip — the same shape as the volume-root defect rev 47 fixed for the
+    chain walk, surviving in a second consumer.
+
+    The subject can still add entries to all three; what changed is that nothing asks IMG-01
+    of a directory whose content no rule reads.
+    """
+    for writable in ({p} for p in sorted(STOCK_ADDABLE)):
+        built = attested_spec(
+            Rung.pwsh, image(PWSH), interpreter(PWSH), ShellBlock(),
+            ladder_oracle(writable=set(writable), relinkable=set()),
+            Platform.WINDOWS, SUBJECT, True,
+        )
+        assert isinstance(built, ShellSpec), (writable, built)
+    together = attested_spec(
+        Rung.pwsh, image(PWSH), interpreter(PWSH), ShellBlock(),
+        ladder_oracle(writable=set(STOCK_ADDABLE), relinkable=set()),
+        Platform.WINDOWS, SUBJECT, True,
+    )
+    assert isinstance(together, ShellSpec), together
+
+
+def test_a_root_something_loads_from_still_refuses_when_it_is_writable():
+    """The other half: the reclassification must not empty the check it narrows.
+
+    If every member could be written and the rung still attested, ENV-06a would have become
+    decorative rather than narrower.
+    """
+    for path in ("C:\\Windows", "C:\\Program Files", "C:\\Windows\\System32\\cmd.exe"):
+        built = attested_spec(
+            Rung.pwsh, image(PWSH), interpreter(PWSH), ShellBlock(),
+            ladder_oracle(writable={path}, relinkable=set()),
+            Platform.WINDOWS, SUBJECT, True,
+        )
+        assert isinstance(built, Exhausted), (path, built)
+
+
 def test_an_unregistered_key_or_a_wrong_shape_refuses_the_rung():
     """G14-05: four separate refusals, and a writable *profile* directory is not one of them."""
     oracle = ladder_oracle()
@@ -463,8 +514,10 @@ def test_an_unregistered_key_or_a_wrong_shape_refuses_the_rung():
     assert isinstance(build(windows_pinned(system_drive=DriveSpec("C:\\"))), Exhausted)
     assert isinstance(build(windows_pinned(home_path=RootRelPath("C:\\Users\\me"))), Exhausted)
     assert isinstance(build(windows_pinned(com_spec=AbsFile("C:\\Windows\\System32\\"))), Exhausted)
-    # A system directory the subject can write refuses; the profile group does not.
-    system_writable = ladder_oracle(writable={"C:\\ProgramData"})
+    # A system directory the subject can write refuses. `C:\\Windows` is the honest witness:
+    # `C:\\ProgramData` used to be one and is no longer in the group at all (ENV-06g,
+    # evidence §3.24), so using it here would have tested nothing while reading as coverage.
+    system_writable = ladder_oracle(writable={"C:\\Windows"})
     assert isinstance(
         attested_spec(
             Rung.pwsh, image(PWSH), interpreter(PWSH), block, system_writable,

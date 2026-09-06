@@ -730,6 +730,51 @@ launcher 目录启动**只关掉「进程创建到前奏切目录」这一段。
 探针取「任一」这一读法；若本意是「前两者须同时具备」，`C:\` 本就通得过，那这条规则的文字要写清，
 而不是靠读者选对。
 
+### 3.24 `C:\ProgramData` 里没有消费者 —— q14 的另一半，实测
+
+**这一条也是量出来的**，来自 `scripts/windows_git_config_probe.ps1` 与同一个
+`.github/workflows/windows-oracle-probe.yml`（run 34013117638）。§3.23 答的是
+q14 的**访问控制**那一半（标准用户能在 `C:\ProgramData` 下建条目）；能不能据此定案，
+还差一件谁都没量过的事：**封闭可运行集里到底有没有东西从那里加载或读配置。**
+
+**假设，以及它被推翻。** 提出的假设是 git 决定这一问 —— Git for Windows 读
+`%ProgramData%` 下的一份 system 作用域配置，而 git config 能设 `core.pager` 与别名，
+这两样在本设计的效果表里以 `-c` 开关形式出现时**已经被判为执行触发器**；一份被种下的配置
+文件不带开关就能到同一个地方，穿过一次封闭集称为惰性的 `git status`。**实测推翻了它。**
+
+**方法。** 同一个 runner，以非管理员 token 运行：枚举 `git config --list --show-origin
+--show-scope`；清点 `C:\ProgramData` 下 git／python／node／ripgrep／chocolatey 的目录与
+ACL；随后以该身份**真的种下** `C:\ProgramData\Git\config`（惰性文本，`--no-pager`，
+不执行任何 pager 或别名），经 git 读回，再还原。三件事都做才答得出这一问 —— 允许写入的 ACL，
+若 git 不读那个文件就什么都不证明；而 git 会读的配置，若主体写不进去同样什么都不证明。
+
+| 量什么 | 结果 |
+|---|---|
+| git 版本 | `git version 2.55.0.windows.5` |
+| git 实际读的全部配置文件 | 只有 `C:/Program Files/Git/etc/gitconfig`（system 作用域，14 个键） |
+| `C:\ProgramData\Git` | 原本不存在 |
+| 标准用户能否创建该目录与 `config` | **能**（目录与文件都建成了） |
+| git 是否读到种下的标记 | **否** —— `--get probe.marker` 与 `--get core.pager` 都退出 1、输出为空 |
+| 种下之后的配置文件清单 | 与之前**逐行相同**，没有新文件 |
+| `C:\ProgramData` 下的工具链目录 | git／python／node／ripgrep **都不存在**；只有 `chocolatey`，且对 `BUILTIN\Users` 只给 ReadAndExecute |
+| `C:\ProgramData` 根自身 | 属主 `NT AUTHORITY\SYSTEM`；`BUILTIN\Users` 有 `Write`（与 §3.23 的掩码一致） |
+
+**结论。** 访问控制那一半成立，消费者那一半不成立：标准用户种得下
+`C:\ProgramData\Git\config`，而这个 git 构建从不查它。**注意不是「文件不存在所以没读」——
+文件是我们建出来的，它照样忽略。** git 真正读的那一个文件在 `C:\Program Files` 下，按 §3.23
+的同一份数据能过 IMG-01。于是按 ENV-06g 自己的判据（「有没有规则依赖这个目录的内容」），
+`ProgramData` 与 `ALLUSERSPROFILE` 属于只查形态的那一类 —— 与 rev 40 把 `PUBLIC` 移过去
+是同一件事。
+
+**这一条的边界，明写。** 一个机器映像、一个 git 构建、一份工具链清单。别的供给方式（凭据助手、
+机器级 .NET 配置）没有量。但 ENV-06g 的判据说的是**本设计里的规则**，而本设计里没有一条读
+`ProgramData` —— 现在实测的工具链也没有。
+
+**探针写法上的一条教训。** 两次运行打印出**同一个用户名**（`Start-Process -Credential`
+继承父进程的环境块，`$env:USERNAME` 因此是陈的），只有
+`WindowsIdentity::GetCurrent().IsInRole(Administrator)` 一真一假 —— 那一个才是权威的。
+**若信了名字，就会把标准用户那次读成管理员那次，得出相反的结论。**
+
 ## 4. 决策节引用的其它来源
 
 拆分前的决策节（rev 24 的 D1–D7）里有二十一处引用不落在 §2、§3 的任何小节里；规范文件不带引文，

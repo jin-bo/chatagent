@@ -289,11 +289,20 @@ def test_posix_requires_tmpdir_and_forbids_the_windows_fields(monkeypatch):
     assert pinned(tmpdir=c.AbsDir("/tmp")).shapes_ok(c.Platform.POSIX) is False  # Windows fields still populated
 
 
-def test_the_public_profile_is_not_a_trusted_system_path():
-    """ENV-06g: `C:\\Users\\Public` is writable by design; requiring IMG-01 of it rejects every enabled rung."""
+def test_only_directories_something_loads_from_are_trusted_system_paths():
+    """ENV-06g: membership is "does a rule depend on the content", not what the key is called.
+
+    All three exclusions were measured, not reasoned (evidence §3.23, §3.24), and each one
+    alone refuses every policy-on rung: a stock Windows grants standard users the ADD bits
+    that IMG-06a's *target* mask contains. `C:\\Users\\Public` is shared user data;
+    `C:\\ProgramData` has no consumer (git reads one config file and it is under
+    `Program Files`); and a volume root is on every ancestor chain already, where rev 47's
+    ancestor mask judges it in the role it actually plays.
+    """
     paths = pinned().system_paths()
-    assert r"C:\Users\Public" not in paths
-    assert r"C:\Windows" in paths and r"C:\ProgramData" in paths
+    for excluded in (r"C:\Users\Public", r"C:\ProgramData", "C:\\"):
+        assert excluded not in paths, excluded
+    assert r"C:\Windows" in paths and r"C:\Program Files" in paths
 
 
 # ------------------------------------------------------------------ LAUNCH: encoding and measuring

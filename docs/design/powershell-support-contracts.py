@@ -249,22 +249,29 @@ class PinnedEnv:  # ENV-06 (1)：固定字段、封闭键集，不是任意映�
         )
 
     def system_paths(self) -> tuple[AbsPath, ...]:
-        r"""系统那一类的路径集合，构造 spec 前逐项过 IMG-01；DriveSpec 取它的盘根。
+        r"""系统那一类的路径集合，构造 spec 前逐项过 IMG-01。
 
-        `public`（`C:\Users\Public`）**不在这里**（ENV-06g）：它是共享的**用户数据**目录、设计上人人可写，
-        没有一处规则从它加载或读配置。留在这一类里，IMG-06a 的 `FILE_ADD_FILE` 一条就让 `attested_spec`
-        拒掉每一个政策开启的 rung —— 一个凑数的环境键关掉整条阶梯。`program_data` / `all_users_profile`
-        留着（工具链确实从 `ProgramData` 读配置），但出厂 ACL 是否让它们过得了 IMG-01 未实测，见规范 §7.3 q14。
+        ENV-06g 的判据是「有没有规则依赖这个目录的**内容**」，而有三个键是按名字读起来像什么归的类、
+        不是按这条判据。每一个**单独**都会拒掉每一个政策开启的 rung —— IMG-06a 的目标掩码含 ADD 两位，
+        出厂 Windows 恰恰授予（证据 §3.23、§3.24）：
+
+        * `public`（`C:\Users\Public`）—— 共享的用户数据目录，设计上人人可写。rev 40 移出。
+        * `program_data` / `all_users_profile`（`C:\ProgramData`）—— 曾以「工具链从中读配置」留在这里。
+          实测：git 只读一个配置文件且在 `Program Files` 下；标准用户种得下 `C:\ProgramData\Git\config`
+          而 git 忽略它；可信表里别的程序在那里根本没有目录。
+        * `system_drive`（`C:\`）—— 没有任何东西从卷根加载。它在**每一条**祖先链上，而那正是 rev 47
+          祖先掩码的用武之地；把它当链头递进来只会让它吃目标掩码，那张掩码里的 add-subdirectory 一位
+          每一个出厂卷根都授予每一个标准用户。
+
+        留下的是真有东西从中加载的那些根：系统根、程序目录、`ComSpec`。
         """
         paths: list[AbsPath] = []
         for v in (
-            self.system_root, self.windir, self.program_data, self.program_files, self.program_files_x86, self.program_w6432,
-            self.common_program_files, self.common_program_files_x86, self.all_users_profile, self.com_spec,
+            self.system_root, self.windir, self.program_files, self.program_files_x86, self.program_w6432,
+            self.common_program_files, self.common_program_files_x86, self.com_spec,
         ):
             if v is not None:
                 paths.append(AbsPath(v))
-        if self.system_drive is not None:
-            paths.append(drive_root(self.system_drive))
         return tuple(paths)
 
 
@@ -282,10 +289,6 @@ def is_drive_spec(value: str) -> bool:
 
 def is_root_relative(value: str) -> bool:
     return value.startswith("\\") and not value.startswith("\\\\")
-
-
-def drive_root(drive: DriveSpec) -> AbsPath:
-    return AbsPath(drive + "\\")
 
 
 # --------------------------------------------------------------------- 配置
