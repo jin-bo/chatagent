@@ -525,12 +525,30 @@ IMG-06a 拆分的直接回归。**runner 是管理员**（§3.23 实测），特
 什么也说明不了。收的是**带路径值、而本表没有登记**的那些（`VIRTUAL_ENV`、`JAVA_HOME`、`CARGO_HOME` …），
 也就是 ENV-06g 写下的那条判据。
 
-**还差六问，且它们被写成断言而不是散文**：`publisher_trusted` 与 `image_signer`（Authenticode）、
+**第三批：起解释器的四问与 Authenticode 两问 —— 20/20。**
+`read_identity` 返回**调用者传进来的那个 `ResolvedImage` 对象本身**（`select_rung` 查
+`identity.image is not img`，重建一份相等的记录会莫名其妙地过不了同一性检查）；
+`resolve_pshome` 向解释器**自己**要 `$PSHOME`，绝不拿 launcher 所在目录顶替 —— §3.20 说它是
+那个正在执行的程序集所在的目录，launcher 是 shim／符号链接／拷贝时那就是另一个地方，
+而正是那个地方的写者能在不碰已哈希 launcher 的前提下改变「这个解释器是什么」。
+
+**`read_config_sources` 的一条关键取舍：读不出来的来源报「有配置」，不报「没有」。** 报「没有」
+等于把一个没人打开成功的文件记成「查过了、是空的」，与 IMG-06c 那条不可读 reparse 点同形；
+报「有配置」会让 `attested_spec` 拒掉该 rung，正是安全的那一侧。子进程主体不匹配同理。
+
+**Authenticode 两问的次序是承重的：签名者名字只在链验通过之后才读。** 从一份未验证的签名里取出的
+名字是**攻击者提供的字符串**，一份按它匹配的 allowlist 等于在信任它被要求检查的那个文件 ——
+所以 `WinVerifyTrust` 失败时 `image_signer` 答 `None`，而不是「它自称谁签的」。
+`WTD_UI_NONE` 是因为这里是无头运行：弹一个框不是回答，是把这一轮挂死。
+`WinVerifyTrust` 的 state 开了必须关，漏掉那次 close 会把链引擎上下文留到进程结束。
+
+**完整性检查现在断言的是 20/20 而不是缺哪几个** —— 同一条测试，两个方向都拦得住：
+少答一问会红，而把「部分」报成「完成」也会红。它问的仍是**类**而不是实例，所以在跑套件的
+每一个平台上都被检查。
+
+**曾经差六问，且它们被写成断言而不是散文**：`publisher_trusted` 与 `image_signer`（Authenticode）、
 `read_identity`／`resolve_pshome`／`read_config_sources`／`preflight`（要起解释器）。
-`test_the_answered_set_is_stated_rather_than_implied` 把这个集合钉死 —— **这就是「部分完成」不会被报成
-「完成」的机制**；另有一条断言 `oracle_complete(WindowsAccessOracle)` 为假，且它问的是**类**而不是实例
-（`oracle_complete` 找的是可调用属性，类同样答得上，而造实例要真 token），于是这条保证在跑套件的
-每一个平台上都被检查，而不只在那一个 job 上。
+那条断言随实现一起收口成 `test_every_oracle_method_is_answered`。
 
 **首跑失败教了一条，而且是代码对、测试错。** 两条断言「不能替换」的用例在真机上都答了「能」——
 因为测试自己建的目录，属主就是测试自己的主体，而**属主隐式持有 `READ_CONTROL` 与 `WRITE_DAC`**，

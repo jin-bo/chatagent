@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import json
 import os
+import subprocess
 from ctypes import wintypes
-from typing import FrozenSet, Mapping, Optional, Tuple
+from typing import Dict, FrozenSet, Mapping, Optional, Tuple
 
+from ..capabilities.process import run_captured
 from ..capabilities.shell_spec import (
     AbsDir,
     AbsFile,
@@ -34,13 +37,16 @@ from ..capabilities.shell_spec import (
     FsId,
     PinnedEnv,
     Platform,
+    InterpreterIdentity,
+    LauncherIdentity,
     ResolvedImage,
     RootRelPath,
     Rung,
     Sha256,
     Subject,
 )
-from ._trust import ReparseResult, ReparseState
+from ..capabilities.shell_spec import ShellDialect
+from ._trust import ReparseResult, ReparseState, SessionConfig
 
 __all__ = [
     "ANCESTOR_MASK",
@@ -333,6 +339,8 @@ class WindowsAccessOracle:
     def __init__(self, subject: Subject, project_root: Optional[str] = None) -> None:
         self._subject = subject
         self._project_root = project_root
+        self._facts: Dict[str, Optional[Tuple[str, str, str]]] = {}
+        self._trust: Dict[str, int] = {}
         self._advapi32, self._kernel32 = _bind()
         self._client: Optional[wintypes.HANDLE] = None
         # Held privileges decide every answer before a DACL is read, so they are read once.
@@ -528,7 +536,306 @@ class WindowsAccessOracle:
                 return image
         return None
 
+    # -------------------------------------------------------------- Authenticode
+
+    def publisher_trusted(self, path: AbsPath) -> bool:
+        r"""IMG-05 route (1): does this machine's own trust store vouch for the image.
+
+        ``WinVerifyTrust`` under the generic-verify action is exactly that question: the
+        signature must be intact *and* chain to a root this machine trusts, with revocation
+        consulted. Anything short of ``ERROR_SUCCESS`` is a no — including "no signature",
+        "untrusted root", and "the check could not run".
+        """
+        return self._verify_trust(path) == 0
+
+    def image_signer(self, path: AbsPath) -> Optional[str]:
+        r"""IMG-03b route (2): the signer's subject name, or ``None`` if there is not one.
+
+        **Only read after the chain verifies.** A name lifted from an unverified signature is
+        an attacker-supplied string, and an allowlist that matched it would be trusting the
+        very file it was asked to check. So a failed ``WinVerifyTrust`` answers ``None`` here
+        rather than "signed by whoever it says".
+        """
+        if self._verify_trust(path) != 0:
+            return None
+        return self._signer_name(path)
+
+    # -------------------------------------------------------------- the interpreter
+
+    def read_identity(
+        self, img: ResolvedImage, dialect: ShellDialect
+    ) -> Optional[LauncherIdentity]:
+        """IMG-07: the launcher's hash, plus the four facts a PowerShell rung reads.
+
+        ``image=img`` is the same object the caller passed, not an equal one: ``select_rung``
+        checks ``identity.image is not img`` and a rebuilt record would fail that identity
+        test for no reason.
+        """
+        try:
+            launcher_hash = self.content_hash(img.canonical_path)
+        except OSError:
+            return None
+        if dialect is not ShellDialect.POWERSHELL:
+            return LauncherIdentity(image=img, launcher_hash=launcher_hash)
+
+        facts = self._interpreter_facts(img.canonical_path)
+        if facts is None:
+            return None
+        edition, version, pshome = facts
+        resolved = self.canonicalize(pshome)
+        if resolved is None:
+            return None
+        return InterpreterIdentity(
+            image=img,
+            launcher_hash=launcher_hash,
+            edition=edition,
+            version=version,
+            pshome=resolved,
+            session_config=self.read_config_sources(resolved, self._subject).session,
+        )
+
+    def resolve_pshome(self, img: ResolvedImage) -> Optional[AbsPath]:
+        r"""IMG-08: the install root the *assembly* lives in, asked of the interpreter itself.
+
+        Never the launcher's own directory. ``$PSHOME`` is defined as the directory of the
+        executing ``System.Management.Automation.dll``, so when the launcher is a shim, a
+        symlink or a copy it is somewhere else — and it is that other directory whose writer
+        can change what the interpreter *is* without touching the hashed launcher (§3.20).
+        """
+        facts = self._interpreter_facts(img.canonical_path)
+        return None if facts is None else self.canonicalize(facts[2])
+
+    def read_config_sources(self, pshome: AbsPath, subject: Subject) -> SessionConfig:
+        r"""IMG-08's three sources, read from disk before anything is launched.
+
+        **A source that cannot be read reports a configuration rather than none**, which
+        refuses the rung. The alternative is to report "no configuration" for a file nobody
+        managed to open, and that is the same shape as IMG-06c's unreadable reparse point:
+        an unexamined thing must not be recorded as examined and ordinary.
+
+        Group Policy takes precedence over both files, and it is the upstream document that
+        says so rather than an inference from the two files' scopes.
+        """
+        if subject != self._subject:
+            return SessionConfig(session="<subject mismatch>")
+
+        candidates = [os.path.join(pshome, "powershell.config.json")]
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(os.path.join(appdata, "powershell", "powershell.config.json"))
+
+        for path in candidates:
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8-sig") as handle:
+                    data = json.load(handle)
+            except (OSError, ValueError):
+                return SessionConfig(session=f"<unreadable: {path}>")
+            if not isinstance(data, dict):
+                return SessionConfig(session=f"<malformed: {path}>")
+            for key in ("ConsoleSessionConfigurationName", "PSSessionConfigurationName"):
+                value = data.get(key)
+                if value:
+                    return SessionConfig(session=str(value))
+
+        policy = self._group_policy_session()
+        if policy is not None:
+            return SessionConfig(session=policy)
+        return SessionConfig(session=None)
+
+    def preflight(self, identity: InterpreterIdentity, prelude: str) -> bool:
+        """IMG-09: run the very prelude a launch would run, and require a clean exit.
+
+        The *same* string, not an equivalent one. The prelude's guard exits 97 when the
+        interpreter is not the attested one and its relocation exits 98; running a simplified
+        version here would establish something other than what the launch establishes.
+        """
+        try:
+            result = run_captured(
+                [str(identity.path), "-NoProfile", "-NonInteractive", "-Command", prelude],
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
+
     # -------------------------------------------------------------- internals
+
+    def _verify_trust(self, path: str) -> int:
+        r"""``WinVerifyTrust``'s status, cached per path.
+
+        ``WTD_UI_NONE`` because this runs headless: a prompt here would hang a turn rather
+        than answer. State is opened and closed around the call as the API requires; leaking
+        the close leaves the chain-engine context alive for the life of the process.
+        """
+        if path in self._trust:
+            return self._trust[path]
+        status = self._verify_trust_uncached(path)
+        self._trust[path] = status
+        return status
+
+    def _verify_trust_uncached(self, path: str) -> int:
+        try:
+            wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
+        except OSError:
+            return -1  # no wintrust is "could not check", which is not "trusted"
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                        ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+        class _FILE_INFO(ctypes.Structure):
+            _fields_ = [("cbStruct", wintypes.DWORD), ("pcwszFilePath", wintypes.LPCWSTR),
+                        ("hFile", wintypes.HANDLE), ("pgKnownSubject", ctypes.c_void_p)]
+
+        class _WINTRUST_DATA(ctypes.Structure):
+            _fields_ = [
+                ("cbStruct", wintypes.DWORD), ("pPolicyCallbackData", ctypes.c_void_p),
+                ("pSIPClientData", ctypes.c_void_p), ("dwUIChoice", wintypes.DWORD),
+                ("fdwRevocationChecks", wintypes.DWORD), ("dwUnionChoice", wintypes.DWORD),
+                ("pFile", ctypes.POINTER(_FILE_INFO)), ("dwStateAction", wintypes.DWORD),
+                ("hWVTStateData", wintypes.HANDLE), ("pwszURLReference", wintypes.LPWSTR),
+                ("dwProvFlags", wintypes.DWORD), ("dwUIContext", wintypes.DWORD),
+                ("pSignatureSettings", ctypes.c_void_p),
+            ]
+
+        # WINTRUST_ACTION_GENERIC_VERIFY_V2
+        action = _GUID(0xAAC56B, 0xCD44, 0x11D0,
+                       (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE))
+        info = _FILE_INFO(ctypes.sizeof(_FILE_INFO), path, None, None)
+        data = _WINTRUST_DATA()
+        data.cbStruct = ctypes.sizeof(_WINTRUST_DATA)
+        data.dwUIChoice = 2            # WTD_UI_NONE
+        data.fdwRevocationChecks = 0   # WTD_REVOKE_NONE: the chain, not the CRL round trip
+        data.dwUnionChoice = 1         # WTD_CHOICE_FILE
+        data.pFile = ctypes.pointer(info)
+        data.dwStateAction = 1         # WTD_STATEACTION_VERIFY
+        data.dwProvFlags = 0x00000010  # WTD_SAFER_FLAG
+
+        wintrust.WinVerifyTrust.restype = wintypes.LONG
+        wintrust.WinVerifyTrust.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(_GUID), ctypes.c_void_p]
+        status = wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
+        data.dwStateAction = 2         # WTD_STATEACTION_CLOSE
+        wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
+        return int(status)
+
+    def _signer_name(self, path: str) -> Optional[str]:
+        """The signing certificate's subject, via the file's PKCS#7 message."""
+        try:
+            crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+        except OSError:
+            return None
+
+        CERT_QUERY_OBJECT_FILE = 1
+        CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED = 1 << 10
+        CERT_QUERY_FORMAT_FLAG_BINARY = 1 << 1
+        CMSG_SIGNER_CERT_INFO_PARAM = 7
+        CERT_FIND_SUBJECT_CERT = 0x000B0000
+        X509_ASN_ENCODING = 0x00000001
+        PKCS_7_ASN_ENCODING = 0x00010000
+        CERT_NAME_SIMPLE_DISPLAY_TYPE = 4
+
+        store = ctypes.c_void_p()
+        message = ctypes.c_void_p()
+        crypt32.CryptQueryObject.restype = wintypes.BOOL
+        if not crypt32.CryptQueryObject(
+            CERT_QUERY_OBJECT_FILE, wintypes.LPCWSTR(path),
+            CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED, CERT_QUERY_FORMAT_FLAG_BINARY,
+            0, None, None, None, ctypes.byref(store), ctypes.byref(message), None,
+        ):
+            return None
+        try:
+            size = wintypes.DWORD()
+            crypt32.CryptMsgGetParam.restype = wintypes.BOOL
+            if not crypt32.CryptMsgGetParam(
+                message, CMSG_SIGNER_CERT_INFO_PARAM, 0, None, ctypes.byref(size),
+            ):
+                return None
+            buf = ctypes.create_string_buffer(size.value)
+            if not crypt32.CryptMsgGetParam(
+                message, CMSG_SIGNER_CERT_INFO_PARAM, 0, buf, ctypes.byref(size),
+            ):
+                return None
+            crypt32.CertFindCertificateInStore.restype = ctypes.c_void_p
+            context = crypt32.CertFindCertificateInStore(
+                store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0,
+                CERT_FIND_SUBJECT_CERT, buf, None,
+            )
+            if not context:
+                return None
+            try:
+                crypt32.CertGetNameStringW.restype = wintypes.DWORD
+                length = crypt32.CertGetNameStringW(
+                    ctypes.c_void_p(context), CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, None, 0)
+                if length <= 1:
+                    return None
+                name = ctypes.create_unicode_buffer(length)
+                crypt32.CertGetNameStringW(
+                    ctypes.c_void_p(context), CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None,
+                    name, length)
+                return name.value or None
+            finally:
+                crypt32.CertFreeCertificateContext(ctypes.c_void_p(context))
+        finally:
+            if message:
+                crypt32.CryptMsgClose(message)
+            if store:
+                crypt32.CertCloseStore(store, 0)
+
+    def _interpreter_facts(self, path: str) -> Optional[Tuple[str, str, str]]:
+        """``(edition, version, $PSHOME)``, read from the interpreter, cached per path.
+
+        Cached because ``read_identity`` and ``resolve_pshome`` both want it and each call is
+        a process launch; the cache is per oracle instance, which is per decision.
+        """
+        if path in self._facts:
+            return self._facts[path]
+        script = (
+            "$ErrorActionPreference='Stop';"
+            "Write-Output $PSVersionTable.PSEdition;"
+            "Write-Output $PSVersionTable.PSVersion.ToString();"
+            "Write-Output ([System.IO.Path]::GetFullPath($PSHOME))"
+        )
+        try:
+            result = run_captured(
+                [path, "-NoProfile", "-NonInteractive", "-Command", script], timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            self._facts[path] = None
+            return None
+        lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        facts = (
+            (lines[0], lines[1], lines[2])
+            if result.returncode == 0 and len(lines) >= 3 else None
+        )
+        self._facts[path] = facts
+        return facts
+
+    def _group_policy_session(self) -> Optional[str]:
+        """The policy source, which outranks both files.
+
+        Absent means absent; a registry that cannot be read reports a configuration, for the
+        same reason an unreadable file does.
+        """
+        try:
+            import winreg
+        except ImportError:
+            return "<no registry>"
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                with winreg.OpenKey(root, r"SOFTWARE\Policies\Microsoft\PowerShellCore") as key:
+                    value, _ = winreg.QueryValueEx(key, "ConsoleSessionConfigurationName")
+                    if value:
+                        return str(value)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return "<policy unreadable>"
+        return None
+
+
 
     def _attributes(self, path: str) -> Optional[int]:
         value = self._kernel32.GetFileAttributesW(path)

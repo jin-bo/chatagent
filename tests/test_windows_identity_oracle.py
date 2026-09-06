@@ -275,31 +275,17 @@ def test_an_absent_path_is_an_error_state_not_not_a_reparse_point(oracle, tmp_pa
 # ------------------------------------------------- the target's shape and images
 
 
-def test_the_answered_set_is_stated_rather_than_implied():
-    """SPEC-05c refuses an incomplete oracle, so which methods are missing is a fact worth
-    pinning: it is what stops "partial" being reported as "done"."""
-    from agentao.permissions_hardline._trust import ORACLE_METHODS
+def test_every_oracle_method_is_answered():
+    """SPEC-05c refuses an incomplete oracle, so the count is worth asserting rather than
+    describing: it is what stops "partial" being reported as "done" in either direction."""
+    from agentao.permissions_hardline._trust import ORACLE_METHODS, oracle_complete
 
-    answered = {m for m in ORACLE_METHODS if hasattr(WindowsAccessOracle, m)}
-    missing = set(ORACLE_METHODS) - answered
-    assert missing == {
-        "publisher_trusted", "image_signer",          # Authenticode
-        "read_identity", "resolve_pshome",            # spawn the interpreter
-        "read_config_sources", "preflight",
-    }
-
-
-def test_an_incomplete_oracle_is_refused():
-    """And it is refused *there*, not with an AttributeError inside launch().
-
-    Asked of the class rather than an instance: `oracle_complete` looks for callable
-    attributes, which a class answers the same way, and building an instance needs a real
-    Windows token — so this way the guarantee is checked on every platform that runs the
-    suite instead of only the one job.
-    """
-    from agentao.permissions_hardline._trust import oracle_complete
-
-    assert oracle_complete(WindowsAccessOracle) is False   # type: ignore[arg-type]
+    missing = {m for m in ORACLE_METHODS if not hasattr(WindowsAccessOracle, m)}
+    assert missing == set()
+    # Asked of the class rather than an instance: `oracle_complete` looks for callable
+    # attributes and a class answers the same way, while building an instance needs a real
+    # Windows token — so this runs on every platform the suite does, not just the one job.
+    assert oracle_complete(WindowsAccessOracle) is True   # type: ignore[arg-type]
 
 
 @windows_only
@@ -393,6 +379,119 @@ def test_discover_does_not_consult_path(oracle, subject, tmp_path, monkeypatch):
     monkeypatch.setenv("ProgramW6432", str(tmp_path / "nothing-here"))
 
     assert oracle.discover(Rung.pwsh, subject) is None
+
+
+# ------------------------------------------------- signing and the interpreter
+
+
+@windows_only
+def test_an_unsigned_file_has_no_signer_and_no_trusted_publisher(oracle, tmp_path):
+    """Both routes must refuse a file nobody signed, and refuse it the same way."""
+    blob = tmp_path / "unsigned.exe"
+    blob.write_bytes(b"MZ" + b"\x00" * 1024)
+
+    assert oracle.publisher_trusted(str(blob)) is False
+    assert oracle.image_signer(str(blob)) is None
+
+
+@windows_only
+def test_a_signed_system_binary_reports_a_signer(oracle):
+    r"""``C:\Windows\System32\cmd.exe`` is signed by Microsoft on any real install, so a
+    ``None`` here would mean the Authenticode path never actually ran."""
+    signer = oracle.image_signer(r"C:\Windows\System32\cmd.exe")
+    assert signer, "the signer name is how an allowlist PublisherTrust entry is matched"
+    assert oracle.publisher_trusted(r"C:\Windows\System32\cmd.exe") is True
+
+
+@windows_only
+def test_a_signer_is_only_read_after_the_chain_verifies(oracle, tmp_path, monkeypatch):
+    """A name lifted from an unverified signature is an attacker-supplied string, and an
+    allowlist matching it would be trusting the file it was asked to check."""
+    monkeypatch.setattr(oracle, "_verify_trust", lambda path: 1)
+    monkeypatch.setattr(oracle, "_signer_name",
+                        lambda path: pytest.fail("read the name without verifying"))
+
+    assert oracle.image_signer(r"C:\Windows\System32\cmd.exe") is None
+
+
+@windows_only
+def test_read_identity_returns_the_same_image_object(oracle, subject):
+    """`select_rung` checks `identity.image is not img`, so an equal-but-rebuilt record
+    would fail an identity test for no reason."""
+    from agentao.capabilities.shell_spec import Rung, ShellDialect
+
+    img = oracle.discover(Rung.cmd, subject)
+    assert img is not None
+    identity = oracle.read_identity(img, ShellDialect.CMD)
+    assert identity is not None
+    assert identity.image is img
+    assert identity.launcher_hash == oracle.content_hash(img.canonical_path)
+
+
+@windows_only
+def test_read_identity_reads_the_four_powershell_facts(oracle, subject):
+    from agentao.capabilities.shell_spec import InterpreterIdentity, Rung, ShellDialect
+
+    img = oracle.discover(Rung.powershell, subject)
+    assert img is not None
+    identity = oracle.read_identity(img, ShellDialect.POWERSHELL)
+    assert isinstance(identity, InterpreterIdentity)
+    assert identity.edition in {"Desktop", "Core"}
+    assert identity.version.count(".") >= 2
+    assert os.path.isdir(identity.pshome)
+
+
+@windows_only
+def test_pshome_is_the_assembly_root_not_the_launchers_directory(oracle, subject):
+    r"""§3.20: ``$PSHOME`` is the directory of the executing automation assembly. For Windows
+    PowerShell those coincide; the assertion that matters is that it is read *from the
+    interpreter* rather than derived from the launcher's path."""
+    from agentao.capabilities.shell_spec import Rung
+
+    img = oracle.discover(Rung.powershell, subject)
+    assert img is not None
+    pshome = oracle.resolve_pshome(img)
+    assert pshome and os.path.isdir(pshome)
+    assert os.path.isfile(os.path.join(pshome, "powershell.exe"))
+
+
+@windows_only
+def test_an_unreadable_config_source_reports_a_configuration_not_none(oracle, subject,
+                                                                     tmp_path):
+    """IMG-06c's discipline applied to IMG-08: an unexamined source must not be recorded as
+    examined and empty. Reporting a configuration refuses the rung, which is the safe side."""
+    (tmp_path / "powershell.config.json").write_text("{ not json", encoding="utf-8")
+
+    assert oracle.read_config_sources(str(tmp_path), subject).session is not None
+
+
+@windows_only
+def test_a_config_naming_a_session_is_reported(oracle, subject, tmp_path):
+    import json as _json
+
+    (tmp_path / "powershell.config.json").write_text(
+        _json.dumps({"ConsoleSessionConfigurationName": "Restricted"}), encoding="utf-8")
+
+    assert oracle.read_config_sources(str(tmp_path), subject).session == "Restricted"
+
+
+@windows_only
+def test_config_sources_are_refused_for_another_subject(oracle, tmp_path):
+    assert oracle.read_config_sources(
+        str(tmp_path), Subject("S-1-5-21-0-0-0-9")).session is not None
+
+
+@windows_only
+def test_preflight_runs_the_prelude_and_reports_its_exit(oracle, subject):
+    from agentao.capabilities.shell_spec import Rung, ShellDialect
+
+    img = oracle.discover(Rung.powershell, subject)
+    assert img is not None
+    identity = oracle.read_identity(img, ShellDialect.POWERSHELL)
+    assert identity is not None
+
+    assert oracle.preflight(identity, "exit 0") is True
+    assert oracle.preflight(identity, "exit 97") is False
 
 
 def test_the_module_imports_on_every_platform():
