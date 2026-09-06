@@ -473,6 +473,106 @@ ACL 决定、并从父目录继承；溢出文件落在**项目树内**（`.agen
 配套地：**这类修复的验证必须发生在缺陷真会发作的平台上**；
 本机绿只证明守卫不咬人，不证明缺陷已除。
 
+## 5.7 本机 Windows oracle：先落访问掩码内核
+
+PR-7 卡在本机 oracle 上，而它十九问里只有一问是真工程：`subject_can_replace`。
+按 §5.6 之后定下的顺序 —— **先探针、再访问掩码内核（用真 ACL 验）、再补齐其余方法、最后接完整性** ——
+本节记第二步。
+
+**落点：** `agentao/permissions_hardline/_windows_identity.py`，`WindowsAccessOracle`。
+它**刻意不是一个完整 oracle**：`oracle_complete` 要求 `ORACLE_METHODS` 全在，这个类只答其中一部分。
+这不是疏漏 —— 政策开启的 rung 本就按设计拒绝不完整的 oracle，所以它可以先落地、先被真 ACL 量，
+其余答案再写；反过来，在它完整之前把它接成阶梯的 oracle，只会让阶梯走空，而 LADDER-03 把走空变成
+每次 shell 调用 DENY。
+
+**纯标准库，是被逼的不是偏好。** 一个可选依赖**盖不住** oracle：缺了它不会降级成「未认证」，
+而是降级成「根本没有 shell」。所以 Win32 面走 `ctypes`，pywin32 将来只能是它之上的快路。
+每一个原型都显式声明 —— 不声明，`ctypes` 按 C `int` 取返回值，64 位上截断句柄，
+`GetFileAttributesW` 的 `INVALID_FILE_ATTRIBUTES` 变成 -1、失败判据永不触发；
+**一个悄悄量错东西的信任检查，比一个跑不起来的更糟**。
+
+**探针带出来的一条正确性要点，务必留着：** `AccessCheck` 在这张清单上只认
+`SeTakeOwnershipPrivilege`，而 `SeRestorePrivilege` 与 `SeBackupPrivilege` 是文件系统在**打开句柄时**
+才查的，远在这次调用之后。所以一个持有它们的 token 能通过纯掩码检查、却照样替换得了映像 ——
+这正是「提权的 agentao 是自己的攻击者」的机制。`REPLACE_PRIVILEGES` 因此在读任何 DACL 之前先短路，
+且判据是**持有**而不是**已启用**：持有者随时可以自己启用它。
+
+**每一处失败都答「能替换」。** 读不到安全描述符、路径不存在、`AccessCheck` 跑不起来 ——
+每一种都是一条没人查过的链，而 IMG-06c 的全部意思就是这种链不许当作「查过了、很正常」放行。
+
+**测试怎么才不是自说自话。** 掩码检查没法用桩证伪 —— 一个「返回掩码」的桩只会复述代码已经相信的东西。
+所以 `tests/test_windows_identity_oracle.py` 在 Windows 上**自己写 ACL** 再问：
+`icacls /inheritance:r /grant *<SID>:(RX)` ⇒ 两问都答不能；`(M)` ⇒ 两问都答能；
+**`(RX,AD,WD)` ⇒ 目标掩码答能、祖先掩码答不能** —— 这一条就是把出厂卷根的形态搬进一个测试自己拥有的目录，
+IMG-06a 拆分的直接回归。**runner 是管理员**（§3.23 实测），特权短路会让每一条 DACL 断言变空，
+所以短路单独断言一次，其余用例把它关掉再测底下的掩码算术；关掉是诚实的，因为被测的正是算术那一层。
+
+跨平台那几条（掩码之间的包含关系、祖先掩码不含两个 ADD 位）到处都跑：它们把 IMG-06a 的拆分写成算术，
+免得日后被无声改回去。
+
+**第二批：目标形态与映像解析（14/20）。** 又落八问 —— `target_platform`、
+`target_filesystem_is_local`、`target_project_root`、`target_base_env`、`target_path_entries`、
+`target_pinned_env`、`resolve_image`、`discover`。两处值得单记：
+
+- **`target_path_entries` 在这里就规范化**，而不是留给过滤器。`path_within()` 的义务文本写着它收
+  「两条已规范化的路径」，而 PATH 条目是环境里的原始字符串 —— 可以经 `..`、8.3 短名或 junction
+  绕到同一个目录。这正是 rev 43 给 `canonicalize` 找回来的那个调用点（方法规则 24），现在它真的被调了。
+- **`discover` 不看 PATH。** IMG-05 (a) 说 PATH 命中不算候选：PATH 恰恰是攻击者能塑形的东西、
+  ENV-01 就是为过滤它而存在的，从它解析出解释器等于在任何过滤发生之前把答案交回攻击者手里。
+  实现按 rung 查安装位置（`%ProgramFiles%\PowerShell\7\pwsh.exe` 等），未展开的变量视为「不是路径」。
+
+`unknown_keys` 取 ENV-06b 的判据而不是「环境里的每一个键」—— 后者在每台机器上都会报出一堆新奇的未知、
+什么也说明不了。收的是**带路径值、而本表没有登记**的那些（`VIRTUAL_ENV`、`JAVA_HOME`、`CARGO_HOME` …），
+也就是 ENV-06g 写下的那条判据。
+
+**第三批：起解释器的四问与 Authenticode 两问 —— 20/20。**
+`read_identity` 返回**调用者传进来的那个 `ResolvedImage` 对象本身**（`select_rung` 查
+`identity.image is not img`，重建一份相等的记录会莫名其妙地过不了同一性检查）；
+`resolve_pshome` 向解释器**自己**要 `$PSHOME`，绝不拿 launcher 所在目录顶替 —— §3.20 说它是
+那个正在执行的程序集所在的目录，launcher 是 shim／符号链接／拷贝时那就是另一个地方，
+而正是那个地方的写者能在不碰已哈希 launcher 的前提下改变「这个解释器是什么」。
+
+**`read_config_sources` 的一条关键取舍：读不出来的来源报「有配置」，不报「没有」。** 报「没有」
+等于把一个没人打开成功的文件记成「查过了、是空的」，与 IMG-06c 那条不可读 reparse 点同形；
+报「有配置」会让 `attested_spec` 拒掉该 rung，正是安全的那一侧。子进程主体不匹配同理。
+
+**Authenticode 两问的次序是承重的：签名者名字只在链验通过之后才读。** 从一份未验证的签名里取出的
+名字是**攻击者提供的字符串**，一份按它匹配的 allowlist 等于在信任它被要求检查的那个文件 ——
+所以 `WinVerifyTrust` 失败时 `image_signer` 答 `None`，而不是「它自称谁签的」。
+`WTD_UI_NONE` 是因为这里是无头运行：弹一个框不是回答，是把这一轮挂死。
+`WinVerifyTrust` 的 state 开了必须关，漏掉那次 close 会把链引擎上下文留到进程结束。
+
+**完整性检查现在断言的是 20/20 而不是缺哪几个** —— 同一条测试，两个方向都拦得住：
+少答一问会红，而把「部分」报成「完成」也会红。它问的仍是**类**而不是实例，所以在跑套件的
+每一个平台上都被检查。
+
+**第四批：接完整性 —— 但不是改 `default_spec`。** 那个函数在 `LADDER_FLIPPED` 置位时**故意抛异常**，
+理由写在它自己的 docstring 里：翻转那一阶段要**替换**它，而不是编辑它。所以「接完整性」落成两样东西：
+
+- `native_oracle(subject=None, project_root=None)` —— PR-7 要调的那个工厂，
+  非 Windows 答 `None`，**token 叫不出名字时也答 `None`**（一个说不出自己在描述谁的访问权的 oracle
+  等于在描述空气，而 SPEC-05 要求每个答案都绑定到一个主体）。
+- **一条把整条阶梯真跑一遍的测试**，只在那一次调用里把 `LADDER_FLIPPED` 打开、产品里一个常量都不动。
+  这是**关于 PR-7 在真 Windows 上到底会做什么的第一份端到端证据**。
+
+**而这份证据说的是：在这台 runner 上每一级都被拒 —— 那是规则在生效，不是失败。** token 是管理员、
+持有全部六项替换特权，于是 IMG-01 的可信集为空、LADDER-03 拒掉每一级。断言就照着这个写：
+**哪天它在一台非管理员 runner 上不再成立，这条测试会说话，而不是悄悄通过。**
+这同时把「提权的 agentao 是自己的攻击者」从一条散文规则变成了一条端到端可执行的断言。
+
+**曾经差六问，且它们被写成断言而不是散文**：`publisher_trusted` 与 `image_signer`（Authenticode）、
+`read_identity`／`resolve_pshome`／`read_config_sources`／`preflight`（要起解释器）。
+那条断言随实现一起收口成 `test_every_oracle_method_is_answered`。
+
+**首跑失败教了一条，而且是代码对、测试错。** 两条断言「不能替换」的用例在真机上都答了「能」——
+因为测试自己建的目录，属主就是测试自己的主体，而**属主隐式持有 `READ_CONTROL` 与 `WRITE_DAC`**，
+后者在两张掩码里都有：能重写 DACL 的人可以给自己授予任何东西。IMG-01 那句「或所有权」写着这件事，
+第一版测试读过去了。修法是 `_disowned()`：先写 ACL、**再把属主交给 `SYSTEM`**（交出去就没了 `WRITE_DAC`，
+所以次序不能反；`icacls` 还做得成，靠的正是 runner 的 `SeTakeOwnershipPrivilege` ——
+也正是 oracle 要对该特权短路、而这些用例要把短路关掉的原因）。
+另补一条 `test_ownership_alone_answers_can_replace` 单独把「属主即可替换」钉住 ——
+否则 `_disowned` 看起来只是仪式。**一个测试自己造的目录，永远观察不到「不可替换」。**
+
 ## 6. 英文版
 
 本文件集当前**只有中文版**。英文版在进入实现之前一次性生成，并从那时起由 `check_design_set.py` 的孪生检查

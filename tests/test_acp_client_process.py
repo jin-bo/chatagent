@@ -600,3 +600,40 @@ class TestBoundedStdoutReader:
                 break
             got.append(item)
         assert got == [b"a\n", b"b\n"]  # the 51-byte middle frame was dropped
+
+
+class TestImmediateExitDetection:
+    """The startup check has to outlast process creation, or it checks nothing.
+
+    50 ms is comfortable on POSIX and short of Windows process creation plus interpreter
+    startup, so a server that crashes on startup had not reached its crash when the window
+    closed. It was reported as running, and the failure resurfaced later as a broken pipe.
+    The Windows job found it the way timing bugs get found: the same test passed on one
+    Python and failed on the other.
+    """
+
+    def test_the_window_is_long_enough_for_windows_process_creation(self) -> None:
+        from agentao.acp_client import process as process_mod
+
+        assert process_mod._IMMEDIATE_EXIT_WINDOW_S >= (
+            1.0 if os.name == "nt" else 0.05
+        )
+
+    def test_a_child_that_exits_after_the_posix_window_is_still_caught(
+        self, monkeypatch
+    ) -> None:
+        """The regression, stated without depending on how slow this machine is: a child
+        that takes 200 ms to die is caught when the window is long enough and missed when
+        it is not."""
+        from agentao.acp_client import process as process_mod
+
+        cfg = _make_config(args=["-c", "import time,sys; time.sleep(0.2); sys.exit(1)"])
+
+        monkeypatch.setattr(process_mod, "_IMMEDIATE_EXIT_WINDOW_S", 2.0)
+        with pytest.raises(RuntimeError, match="exited immediately"):
+            ACPProcessHandle("slow-crash", cfg).start()
+
+        monkeypatch.setattr(process_mod, "_IMMEDIATE_EXIT_WINDOW_S", 0.01)
+        handle = ACPProcessHandle("slow-crash-missed", cfg)
+        handle.start()   # the same crash, not seen
+        handle.stop()
