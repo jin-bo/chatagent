@@ -54,9 +54,11 @@ _ENUMERATE = (
 
 # NAME-02: "every row verified resolvable in that state". Asked of the interpreter, because
 # an enumeration proving resolvability is an assumption, not a measurement.
+# `<NAMES>` rather than a `str.format` field: this script is full of PowerShell braces, and
+# `.format` reads every one of them as a replacement field.
 _VERIFY = (
     "$ErrorActionPreference='Stop'; "
-    "$names = @({names}); "
+    "$names = @(<NAMES>); "
     "$missing = @($names | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }); "
     "Write-Output ('MISSING=' + $missing.Count); "
     "$missing | ForEach-Object { Write-Output ('MISS ' + $_) }"
@@ -110,7 +112,7 @@ def main() -> int:
         })
 
     quoted = ",".join("'" + r["name"].replace("'", "''") + "'" for r in rows)
-    verify = _run(str(identity.path), f"{prelude}; " + _VERIFY.format(names=quoted))
+    verify = _run(str(identity.path), f"{prelude}; " + _VERIFY.replace("<NAMES>", quoted))
     missing = [
         line.split(" ", 1)[1].strip()
         for line in (verify.stdout or "").splitlines()
