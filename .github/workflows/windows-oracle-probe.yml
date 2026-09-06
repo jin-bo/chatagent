@@ -35,6 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The identity probe is stdlib-only and needs nothing. The command-table probe imports
+      # the product, so it needs the project's own environment.
+      - uses: astral-sh/setup-uv@v7
+
       # Stdlib only — the probe measures what `ctypes` can reach, because that is the
       # budget the oracle itself has. An optional dependency cannot gate it: an incomplete
       # oracle does not degrade to "unattested", it empties the ladder, and LADDER-03 turns
@@ -118,6 +122,25 @@ jobs:
           Write-Host "pwsh      : $((Get-Command pwsh -ErrorAction SilentlyContinue).Source)"
           Write-Host "--- icacls C:\ProgramData"
           icacls C:\ProgramData
+
+      # NAME-02's table, measured in the state the product itself builds. Separate step so a
+      # failure here is legible: the identity questions above are answered either way.
+      - name: Measure NAME-02's command table in the pinned startup state
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          uv sync --extra cli
+          uv run python scripts/windows_command_table_probe.py --rung powershell `
+            --out C:\probe\out\command-table-powershell.json
+          uv run python scripts/windows_command_table_probe.py --rung pwsh `
+            --out C:\probe\out\command-table-pwsh.json
+          foreach ($f in 'command-table-powershell.json', 'command-table-pwsh.json') {
+            $p = "C:\probe\out\$f"
+            if (Test-Path $p) {
+              $r = Get-Content $p | ConvertFrom-Json
+              Write-Host "$f : $($r.identity.edition) $($r.identity.version) — $($r.row_count) rows, $($r.unresolvable.Count) unresolvable, enumerate rc=$($r.enumerate_returncode)"
+            }
+          }
 
       - uses: actions/upload-artifact@v4
         if: always()
