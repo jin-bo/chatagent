@@ -39,6 +39,7 @@ from .shell_spec import (
     PublisherTrust,
     ResolvedImage,
     Sha256,
+    ShellBlock,
     ShellSpec,
     WindowsLaunch,
     default_spec,
@@ -327,7 +328,11 @@ class LocalShellExecutor:
     ``taskkill`` / ``killpg`` teardown by platform.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, shell_block: "ShellBlock | None" = None) -> None:
+        # CFG-01 / G09-02: the user-level shell block, or ``None`` when nothing supplied one.
+        # Held rather than read here, because the block decides *which* rung this executor
+        # reports and that answer has to be the same one every call sees (SPEC-07b).
+        self._shell_block = shell_block
         self._spec: "ShellSpec | Exhausted | None" = None
 
     @property
@@ -340,7 +345,7 @@ class LocalShellExecutor:
         executor has to answer for itself rather than inherit this.
         """
         if self._spec is None:
-            self._spec = default_spec(local=True)
+            self._spec = default_spec(self._shell_block, local=True)
         return self._spec
 
     def run(self, request: ShellRequest) -> ShellResult:

@@ -174,19 +174,20 @@ See [TOOL_CONFIRMATION_FEATURE.md](../guides/tool-confirmation.md) for what each
 
 Full rule taxonomy, examples, and runtime semantics → [TOOL_CONFIRMATION_FEATURE.md](../guides/tool-confirmation.md).
 
-### The `shell` block (accepted today, inert today)
+### The `shell` block (`ladder` is live; the rest is accepted and inert)
 
 `permissions.json` also accepts a top-level `shell` object, read **only** from the user-level file
 (`<home>/.agentao/permissions.json`) and never from the workspace copy — a block checked into a repository
-would let the repository choose the interpreter the agent runs. It is validated now and changes nothing
-now: every rung agentao can construct is policy-off, so the shell still launches exactly as it did.
+would let the repository choose the interpreter the agent runs. Every key here is validated. All but one are inert today: the rungs agentao constructs by default are
+policy-off, so the shell launches exactly as it did. **`ladder` is the exception** — setting it to `true`
+opts this host into the trusted-resolution ladder now, ahead of any change to the default.
 
 | Key | Type | Notes |
 |---|---|---|
 | `path` | string | Absolute path to an interpreter. **Paired with `dialect`** — supplying one without the other is an error, because neither can be derived from the other. |
 | `dialect` | `"posix"` / `"cmd"` / `"powershell"` | The syntax that interpreter reads. There is no `rung` key: the rung is derived from the dialect, the target platform and the image's identity. |
 | `allow_git_bash` | bool | Default `false`. Whether Git Bash may be selected ahead of `cmd` on Windows. |
-| `ladder` | bool | **Unset by default, and unset is not `false`.** Whether the trusted-resolution ladder runs at all. Absent means follow the built-in answer, so a release that turns the ladder on reaches hosts that never configured it; an explicit value outranks the built-in in both directions. Turning it **on** before the release is unsupported and can deny every shell call, and the same key is the way back. |
+| `ladder` | bool | **Unset by default, and unset is not `false`.** Whether the trusted-resolution ladder runs at all. Absent means follow the built-in answer, so a later release that turns the ladder on reaches hosts that never configured it; an explicit value outranks the built-in in both directions. **Setting it to `true` opts in now**, and on Windows that is a real change: an interpreter that cannot be attested is refused rather than launched. **If agentao runs as an administrator there, the trusted set is empty by design and every shell call is denied** — measured, not predicted. The same key is the way back, which is why it is a key and not a release. |
 | `allowlist` | array | Content pins (`{"path": …, "sha256": …}`) and trusted publishers (`{"signer": …}`). A pin is an **additional** condition on an image, never a replacement for its location. Its `path` is compared verbatim, so write the canonical spelling. |
 | `env_passthrough` | array | Literal environment key names to pass through to the child on a policy-on rung. Entries containing `*` are dropped, and the reserved keys (`PATH`, `BASH_ENV`, `SHELLOPTS`, …) cannot be granted back. |
 

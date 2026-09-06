@@ -17,7 +17,7 @@
 | PR-4 | 可信解析：IMG-01 的谓词、宿主侧 identity oracle（可注入；本机实现与非本机契约同一接口，**绑定一个执行主体**、与主体有关的方法逐个收它，含目标平台、目标文件系统是否本机、目标钉值环境、目标项目根、发现、身份（收方言不收 rung）、三来源、预检）；每一级的 `LauncherIdentity` 与 spawn 前重哈希、解释器发现两档、从映像读身份、从磁盘读三来源配置、预检、rung 导出表；裸词解析器（NAME-02、NAME-03）与按身份分的 alias/function/cmdlet 表（`Get-Command -All`，**必须在本 PR 建立的启动状态里量**）；子进程环境（ENV-06 三分法：钉值 / 值检查透传 / 移除，键按目标平台折叠；`EnvInputs` 显式化，每次调用算一次）；`PinnedEnv` 的封闭键集与构造前校验；逐级命令行与前奏（含起始目录与 `<W>` 切换）；阶梯与 `Exhausted` 状态 | IMG-01–09、NAME-02、NAME-03、ENV-01–06、ENV-01a、LAUNCH-02–09、LADDER-01、LADDER-03、SPEC-04a、SPEC-05 | 否 | PR-2、PR-3 |
 | PR-5 | 系统提示按方言渲染（`agentao/prompts/sections.py`） | —（渲染 SPEC-01 的方言，不定义规则） | 否 | PR-1 |
 | PR-6 | `windows-latest` job：§5 启动矩阵、§3.12 哨兵、门槛矩阵里平台为 `windows` 的每一行 —— 集合不是区间：G19 与 G22 属于 PR-0、与平台无关；G25 的「容器 `root`」半在 ubuntu | —（只跑门槛） | 否 | PR-3、PR-4、PR-5 |
-| PR-7 | 翻转：Windows 默认走阶梯；删除 `legacy_cmd`；Git Bash 那一级在自己的开关后面、仅当 G20 绿时开启 | LADDER-04、LADDER-05（删除） | **是** | PR-6 |
+| PR-7 | **分两步。第一步「可达」已实施：** `default_spec` 收配置块，阶梯开启时真的选级（不再抛异常），本机 oracle 与主体在此接线，配置块经工厂送进 `LocalShellExecutor` —— 默认仍关，`legacy_cmd` 仍在，`shell.ladder: true` 可选入。**第二步「翻转」未实施：** `LADDER_FLIPPED` 置真、删除 `legacy_cmd`、Git Bash 那一级仅当 G20 绿时开启 | LADDER-04、LADDER-05（第二步删除） | **是（仅第二步）** | 第一步 PR-6；第二步等 G09-03 收到的分布 |
 
 **PR-0 不需要本阶梯的任何东西**（子代理计划 §5）。**PR-1 依赖 PR-0** 只因 SUB-01：子代理按身份持父级的
 `shell`，否则本阶梯的每一条在子代理里都不生效（规范 §6）。**PR-4 需要 PR-2 与 PR-3，不只是 PR-1：**
