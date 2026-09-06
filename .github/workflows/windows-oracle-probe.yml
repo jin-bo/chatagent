@@ -48,6 +48,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path C:\probe\out | Out-Null
           Copy-Item scripts\windows_oracle_probe.py C:\probe\
+          Copy-Item scripts\windows_git_config_probe.ps1 C:\probe\
           icacls C:\probe /grant "*S-1-5-32-545:(OI)(CI)(RX)" | Out-Null
           icacls C:\probe\out /grant "*S-1-5-32-545:(OI)(CI)(M)" | Out-Null
           (Get-Command python).Source | Set-Content C:\probe\python-path.txt
@@ -122,6 +123,51 @@ jobs:
           Write-Host "pwsh      : $((Get-Command pwsh -ErrorAction SilentlyContinue).Source)"
           Write-Host "--- icacls C:\ProgramData"
           icacls C:\ProgramData
+
+      # q14's second half. The oracle probe measured that a standard user may add files
+      # under C:\ProgramData; this measures whether anything in the closed runnable set
+      # reads from there, which is what decides whether that ACL matters. Git is the case
+      # that settles it, because git config can set `core.pager` and aliases — which the
+      # effect table already treats as execution triggers when they arrive as `-c` flags.
+      - name: Measure git's config sources as the default identity
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File C:\probe\windows_git_config_probe.ps1 `
+            -Out C:\probe\out\git-config-default.json
+          $r = Get-Content C:\probe\out\git-config-default.json | ConvertFrom-Json
+          Write-Host "identity        : $($r.identity.user) (admin=$($r.identity.is_admin))"
+          Write-Host "git             : $($r.git.version)"
+          Write-Host "ProgramData\Git : exists=$($r.program_data.git_config.exists)"
+          Write-Host "--- system scope"; Write-Host $r.git.system_scope
+          Write-Host "--- marker read back (exit $($r.write_test.marker_exit))"
+          Write-Host $r.write_test.marker_lookup
+
+      # The one that counts. The default runner token is an elevated administrator, so a
+      # successful write by it says nothing about what the subject can do.
+      - name: Measure git's config sources as the standard user
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pw = ConvertTo-SecureString 'Pr0be!Passw0rd#2026' -AsPlainText -Force
+          $cred = New-Object System.Management.Automation.PSCredential('probeuser', $pw)
+          Start-Process -FilePath (Get-Command pwsh).Source `
+            -ArgumentList '-NoProfile', '-File', 'C:\probe\windows_git_config_probe.ps1', `
+                          '-Out', 'C:\probe\out\git-config-standard.json' `
+            -Credential $cred -WorkingDirectory 'C:\probe' -Wait `
+            -RedirectStandardOutput C:\probe\out\git-standard-stdout.txt `
+            -RedirectStandardError C:\probe\out\git-standard-stderr.txt
+          $r = Get-Content C:\probe\out\git-config-standard.json | ConvertFrom-Json
+          Write-Host "identity        : $($r.identity.user) (admin=$($r.identity.is_admin))"
+          Write-Host "wrote the file  : $($r.write_test.wrote)  $($r.write_test.error)"
+          Write-Host "restored        : $($r.write_test.restored)"
+          Write-Host "--- ProgramData\Git dir"
+          Write-Host ($r.program_data.toolchain_dirs | Where-Object { $_.name -eq 'Git' } | ConvertTo-Json -Depth 6)
+          Write-Host "--- marker read back (exit $($r.write_test.marker_exit))"
+          Write-Host $r.write_test.marker_lookup
+          Write-Host "--- core.pager read back (exit $($r.write_test.pager_exit))"
+          Write-Host $r.write_test.pager_lookup
 
       # NAME-02's table, measured in the state the product itself builds. Separate step so a
       # failure here is legible: the identity questions above are answered either way.
