@@ -395,12 +395,29 @@ def test_an_unsigned_file_has_no_signer_and_no_trusted_publisher(oracle, tmp_pat
 
 
 @windows_only
-def test_a_signed_system_binary_reports_a_signer(oracle):
-    r"""``C:\Windows\System32\cmd.exe`` is signed by Microsoft on any real install, so a
-    ``None`` here would mean the Authenticode path never actually ran."""
-    signer = oracle.image_signer(r"C:\Windows\System32\cmd.exe")
+def test_a_catalog_signed_system_binary_verifies_and_reports_a_signer(oracle):
+    r"""``cmd.exe`` carries no embedded PKCS#7 — its signature lives in a ``.cat``.
+
+    This is the case that caught an embedded-only check: it reported the ladder's own
+    interpreters as unsigned, which would have made the trust-store route decorative for
+    exactly the files it exists to admit.
+    """
+    cmd = r"C:\Windows\System32\cmd.exe"
+    assert oracle.publisher_trusted(cmd) is True, "a catalog signature must verify"
+    signer = oracle.image_signer(cmd)
     assert signer, "the signer name is how an allowlist PublisherTrust entry is matched"
-    assert oracle.publisher_trusted(r"C:\Windows\System32\cmd.exe") is True
+    assert "Microsoft" in signer
+
+
+@windows_only
+def test_the_catalog_lookup_finds_a_catalog_for_a_system_binary(oracle):
+    """The half that would otherwise fail silently: "no catalog found" and "not signed"
+    reach the caller as the same answer, and only one of them is a fact about the file."""
+    found = oracle._catalog_for(r"C:\Windows\System32\cmd.exe")
+    assert found is not None
+    catalog, tag = found
+    assert catalog.lower().endswith(".cat")
+    assert len(tag) >= 40 and all(c in "0123456789ABCDEF" for c in tag)
 
 
 @windows_only
