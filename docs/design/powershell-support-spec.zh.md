@@ -178,7 +178,7 @@ pi-mono `@853a80d26`（2026-08-28）。本文自身不含 `file:line` 引文；�
 | **LADDER-02** | `allow_git_bash` 默认 `false`，只在用户级 `shell` 块或构造 spec 里（CFG-01）；在末级被选定**之前**读；开关开而找不到 Git Bash ⇒ `cmd` | 守在 `cmd` 之下的开关是死代码，而门槛会绿在生产环境走不到的路径上 | §3.13 |
 | **LADDER-03** | 阶梯走空（每一级被拒）⇒ 工具**仍然注册**，`ShellSpecProvider` 暴露的不是 spec 而是 `Exhausted(reason)` 状态；TOOL-04 读到它时在任何方言与 rung 检查**之前**返回 `hardline:no-trusted-rung-opaque:<原因>`（原因是走空的那条：每一级被 IMG-01 拒、显式 `shell.path` 被 IMG-05 (b) 拒、显式来源缺字段（CFG-02）……）；不注销工具，不退回 `%COMSPEC% /c` 加惰性地板；显式来源被拒时同样进入这个状态，不落到 `auto` | 注销藏起理由；退回是实现者最顺手、也最弱的一种；把走空塞进 `rung` 的取值里，它就排在把它判成未知 rung 的检查之后 | §2.4 |
 | **LADDER-05** | 翻转之前（PR-1 至 PR-6）Windows 的默认执行器报 `CMD × legacy_cmd`：`%COMSPEC% /c`、今天的环境、今天的（空转的，§2.4）regex 地板，裁定与 `main@3537753` 逐段相同；它不是阶梯的一级，阶梯只在翻转后运行。PR-7 删除这个取值，之后报它的 spec 按 SPEC-02 拒绝 | 没有这个值，翻转前的 Windows 要么在 PR-2 就被翻转（`CMD × cmd`），要么每次调用 DENY（`UNKNOWN`），要么用 POSIX 模式扫 cmd 文本报干净地板（`system_posix`）—— 三条各违反一条规则 | §2.1、§2.4 |
-| **LADDER-04** | 翻转（PR-7）的前提：G09 的三个桶降级率经接受、`ruff` 绿；Git Bash rung 只在 G20 绿时启用，红则关着这一级发布 | 不为 Windows 声称没在 Windows 上测过的东西 | §2.5 |
+| **LADDER-04** | 翻转（PR-7）的前提：G09 的三项逐条绿 —— 日常集在政策开启的 cmd 与 PowerShell 下仍 PASS、`LADDER_FLIPPED` 能由配置读回（退路不靠发版）、每次拒绝带可计数的理由串 —— 再加 `ruff` 绿；Git Bash rung 只在 G20 绿时启用，红则关着这一级发布 | 不为 Windows 声称没在 Windows 上测过的东西。而「可接受的降级分布」是关于用量的问题，翻转前无人能答：§7.2 把「不透明桶不可用」列为改变本规范的条件，也就是说那个数字来自发布之后。所以这道门收可证伪的三项加一条退路，不收一个猜出来的百分比 | §2.5 |
 
 ### 2.7 `CFG` —— 配置
 
@@ -238,7 +238,7 @@ pi-mono `@853a80d26`（2026-08-28）。本文自身不含 `file:line` 引文；�
 | **EFF-05** | PowerShell：参数只要点名了非文件系统的 provider 驱动器 —— 匹配 `^[A-Za-z][A-Za-z0-9]*:` 且不是盘符路径 —— 不论 cmdlet 是什么，该命令**不透明**，理由 `EFF-05`；在查表之后、标志判定之前判（本文 §4），不是一个效果标志 | 一条规则关掉 `Env:`、`Alias:`、`Function:`、`Variable:` 与注册表驱动器；往 `C:\` 的 `Copy-Item` 仍是惰性；「非惰性」若不是一个裁定，`EffectFlag` 里就没有值能表达它 | §3.15 |
 | **EFF-06** | 惰性断言所依赖的任何位置上出现 `Dynamic` token ⇒ 不透明（TOK-02） | | §3.9 |
 | **EFF-08** | 可信表是**数据，不是代码**：每条条目登记 `execution_triggers`（哪些参数形状让它把命令行供给的东西当代码运行 —— `git -c core.pager=`、`git --exec-path=`、`python -c`、`node -e`、`explorer <.lnk>`）、`rebind_triggers`、`caller_scope`、`predicate_positions`，每一项带来源；`flags(args)` 由这些字段推出，没有别的来源。每条条目都要登记它的触发集合，**空集是合法的登记 —— 那就是惰性**（`Get-Date`、`pwd`）；不能进表的是「触发集合从没被考虑过」的条目，不是触发集合为空的条目 | 一个函数形式的表无从评审，而 q9 的每一条都是一份需要有人核验的断言 | §3.15 |
-| **EFF-07** | 逐方言的 `executes_input` 集合（`+` 表示同时 `rebinds_caller`；`=` 表示输入语言就是本方言，是 EFF-02 唯一允许按 WRAP-04 4a 重新进入的**本方言求值器**，其余条目没有字面串例外）：PowerShell `Import-Module`/`ipmo`+、`Invoke-Expression`/`iex`+=、作用于路径的 `.`+、`Add-Type`+、作用于路径的 `&`、`-File`；cmd `call <file>`+、`start <file>`（两者在 CMD-01 与 WRAP-05 之下到不了本条，同 WRAP-04 的可达性，保留为纵深 —— q11 里 `call` 那一半因此是死问题）；bash `.`/`source`+、`eval`+=（`git_bash` 上 BASH-01 先于本条拒掉 `eval`，保留为纵深）；以及任何被喂了脚本路径的解释器。 | 往清单里加一种形式不改变任何行为，只是加一条规则本就通过的测试 | §3.15 |
+| **EFF-07** | 逐方言的 `executes_input` 集合（`+` 表示同时 `rebinds_caller`；`=` 表示输入语言就是本方言，是 EFF-02 唯一允许按 WRAP-04 4a 重新进入的**本方言求值器**，其余条目没有字面串例外）：PowerShell `Import-Module`/`ipmo`+、`Invoke-Expression`/`iex`+=、作用于路径的 `.`+、`Add-Type`+、作用于路径的 `&`、`-File`；cmd `call <file>`+、`start <file>`（两者在 CMD-01 与 WRAP-05 之下到不了本条，同 WRAP-04 的可达性，保留为纵深 —— q11 两半因此都是死问题）；bash `.`/`source`+、`eval`+=（`git_bash` 上 BASH-01 先于本条拒掉 `eval`，保留为纵深）；以及被喂了脚本路径的 shell —— `bash`/`cmd`/`pwsh`，由 WRAP-01–03 在本表之前拒。 | 往清单里加一种形式不改变任何行为，只是加一条规则本就通过的测试。末条曾写成不限定的「任何解释器」，那读起来把 `python foo.py` 也收进来，与 §1 的边界（可信工具链**按设计**跑工作树内容仍算惰性，`git commit` 跑 hooks 是同一件事）直接矛盾 | §3.15 |
 | **EFF-07a** | PowerShell 里「作用于路径的 `.` 与 `&`」两条在 LOWER-02 之下到不了本条（WRAP-04 的可达性），保留为纵深。 | — | §3.15 |
 | **EFF-07b** | 枚举出来的修改形式（cmd `set`/`path`/`setx`/`call set`/`for /f … do set`；PowerShell `$env:`/`*-Item`/`Set-Content`/`[Environment]::SetEnvironmentVariable`/`Set-Alias`/`New-Alias`/`Set-Variable`/`New-Item -Path Function:`；bash `PATH=`/`export`/`declare -x`/`env PATH=`/`printf -v`/`read`/`hash -p`/`alias`/函数定义/`BASH_ENV=`/`ENV=`）是**门槛用例，不是规则** | — | §3.15 |
 
@@ -371,17 +371,17 @@ MCP 的取消（MCP-04）与本规范无交集：shell 工具不是 MCP 工具�
 编号沿用拆分前的 §9，好让「q4」「q12」这些引用不变；q7 与 q8 已随 PR-0 移入子代理计划。
 **q2、q3、q9、q11 是 PR-2 之前的决策门，q4 是第五道，q13 与 q14 是 PR-4 之前的两道**（实现文件 §3）。
 
-**2026-09-05 定案（用户，PR-1 落地时）—— 五道门关掉四道，q11 与 q14 仍开：**
+**2026-09-05 定案 —— PR-1 落地时用户关掉四道（q4、q9、q2/q3、q13）；第五道 q11 同日实测后关掉，PR-4 之前的 q14 仍开：**
 
 | 问 | 定案 | 它约束什么 |
 |---|---|---|
 | q4 | **`system_posix` 维持政策关闭。** TOK-02、EFF-\*、IMG-02 只在 Windows 的政策开启级生效 | PR-2 不碰 POSIX 主机的任何现有行为；`rung` 字段就是让这条随时可翻的东西。**这也是 PR-1 已落地的形态** |
-| q9 | **惰性集取「最小 + 常用只读工具链」这一档**：`git status`/`log`/`diff`、`ls`、`cat`、`grep`、`python -c`、`node -e` 一类 | 每一条都是一份要有人核验的断言，所以逐条进表、逐条给出核验依据；不取「除已知危险外全惰性」那一档 —— 那会把封闭集变回黑名单 |
+| q9 | **惰性集取「最小 + 常用只读工具链」这一档**：`git status`/`log`/`diff`、`ls`、`cat`、`grep`、`rg`、`head`、`wc`、`date` 一类；**`python -c` 与 `node -e` 不在其中** —— 定案原文列了它们，而 EFF-01 的惰性定义写着「不把命令行供给的输入当代码运行」，这两个正是那件事，G04-30 也早就把它们钉成不透明 | 每一条都是一份要有人核验的断言，所以逐条进表、逐条给出核验依据；不取「除已知危险外全惰性」那一档 —— 那会把封闭集变回黑名单 |
 | q2、q3 | **只收物理破坏的对应物**：`format`、`diskpart clean`、`cipher /w`、BitLocker 擦除、`vssadmin delete shadows`。**不收** codex 的「带 URL 的启动」类，**也不收**凭据/令牌库那一类 | 危险表的判据是「不可恢复的丢失」，URL 启动不是；把它收进来会拒掉普通的「打开一个链接」 |
 | q13 | **要求工具链装在主体写不了的前缀下。** 不引入逐路径的用户信任授权 | 不新开一条进入可信集的例外，也不继承 IMG-05 (b) 那处 TOCTOU。代价明说：开发者机器上 `uv`、python.org 的 Python、scoop 的 shim 按现装法进不了可信集，要重装到别处 |
-| q11 | **仍开着。** `call` 与 `start` 的 `rebinds_caller` 作用域无文档，只能实测 | 这不是一道偏好题，是一次测量：要在 Windows 上跑探针（门槛矩阵 G11 一族）。在它定案之前，cmd 的这两个形式取**保守读法**（当作会重绑调用方作用域），因为猜错的那一侧是漏判 |
+| q11 | **已关：判为不可观测，不再需要 Windows 探针。** `call` 与 `start` 都到不了这个标志被读的那一点，所以 cmd 真实的作用域是什么，都改不了任何一次裁定 | `call` 是 CMD-01 的控制关键字，body 被切成命令**之前**整体拒；`start` 在 WRAP-05 的生成进程集里，查可信表**之前**就拒；而 `rebinds_caller` 只在条目会重新进入时才被读到，按 EFF-03 文件形式永不重新进入。EFF-07 本来就写着「两者到不了本条」，只是当初只对 `call` 那一半下了结论。关闭以那两次集合成员关系为条件，G04-39 是它的绊线：谁把任一个移出去，那一行变红，q11 自动重开 |
 
-1. **哪种降级分布可接受？**
+1. **哪种降级分布可接受？** **已关，2026-09-05：改由 G09 的三项收。** 一个事前的百分比无人能答，而门槛写着它就等于写了一道判不了红的门；分布改在发布之后由 G09-03 的拒绝理由串量出来，翻转前收 G09-01 的日常集断言与 G09-02 的退路。
 2. **`cryptsetup luksFormat` 的 Windows 对应物。**
 3. **codex 的「带 URL 的启动」类。**
 4. **`system_posix` 那一级该不该采纳 TOK-02、EFF-* 与 IMG-02？** 在 Linux 上三者都是对每一位现有用户的
@@ -396,8 +396,9 @@ MCP 的取消（MCP-04）与本规范无交集：shell 工具不是 MCP 工具�
 10. **还有什么先于 kind 闸门、而 codex 自己也没找到？** LOWER-01 照着 codex 的流水线走，也就只和
     codex 自己的覆盖面一样好 —— 它接受清单上的注释写着那些拒绝要维持到逐 kind 的降级语义被审过为止，
     所以它的闸门是别人为另一套政策画下的底线。
-11. **cmd 里哪些 `rebinds_caller` 形式带哪种作用域？** PowerShell 与 bash 那几个有充分文档，`call` 与
-    `start` 没有，而这个标志值多少钱，全看它那张逐方言表值多少钱。
+11. **cmd 里哪些 `rebinds_caller` 形式带哪种作用域？** **已关，2026-09-05：判为不可观测。** 这两种形式
+    都到不了标志被读的那一点（`call` 拒于 CMD-01，`start` 拒于 WRAP-05，`rebinds_caller` 又只在会重新
+    进入的条目上被读），所以实测 cmd 的真实作用域改不了任何一次裁定。见 §7.3 决策表 q11 行与 G04-39。
 12. **用户自装的工具链怎么才跑得起来？** allowlist 降级为附加条件之后（IMG-03），`uv`、python.org 的
     Python、scoop 的 shim —— 它们**按设计**就装在用户可写的前缀下 —— 进不了可信集：过滤后的 PATH 会丢掉
     它们的目录，而 allowlist 也不再能单独成立。可选项是：宿主把它们装到「该 agent 主体写不了」的根下；

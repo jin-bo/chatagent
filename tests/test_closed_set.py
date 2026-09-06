@@ -396,3 +396,97 @@ def test_a_provider_with_no_rung_answers_with_a_verdict_and_not_an_exception():
         record = decided_call(absent, "dir", AbsPath("C:\\work"), None)
         assert isinstance(record.verdict, Deny)
         assert record.verdict.reason == "hardline:unknown-rung-opaque"
+
+
+# ------------------------------------------------------------------ G04-39 / §7.3 q11
+
+POLICY_ON = ((Rung.cmd, CMD), (Rung.git_bash, BASH), (Rung.pwsh, PWSH))
+
+
+def test_neither_cmd_form_of_q11_reaches_the_effect_table():
+    """G04-39: the reachability §7.3 q11's closure rests on.
+
+    q11 asked which ``rebinds_caller`` scope cmd's ``call`` and ``start`` carry, and was held
+    open for a Windows probe. Neither form reaches the point where the flag is read: ``call``
+    is a control keyword, so CMD-01 refuses the body before it is split into commands, and
+    ``start`` is a spawner, so WRAP-05 refuses it before the trusted table is consulted. The
+    closure is conditional on those two set memberships, which is why they are asserted here
+    rather than left implied — drop either one and this goes red, which reopens q11.
+    """
+    from agentao.permissions_hardline._cmd import CMD_CONTROL, scan_cmd
+    from agentao.permissions_hardline._wrappers import SPAWNERS
+
+    assert "call" in CMD_CONTROL
+    assert "start" in SPAWNERS[ShellDialect.CMD]
+    for body in ("call foo.bat", "echo hi & call foo.bat"):
+        assert scan_cmd(body) == "hardline:cmd-opaque:CMD-01:call"
+        assert isinstance(analyse(ShellDialect.CMD, body), Opaque)
+    for body in ("start x.exe", 'start "" x.exe', "echo hi & start x.exe"):
+        assert scan_cmd(body) == "hardline:cmd-opaque:WRAP-05:start"
+        assert isinstance(analyse(ShellDialect.CMD, body), Opaque)
+
+
+def test_an_entry_that_does_not_re_enter_never_reads_its_caller_scope(measured):
+    """The other half of q11's closure: the flag has one read site, behind ``reenters``.
+
+    ``Import-Module`` is the witness that gets furthest — it carries ``caller_scope``, so
+    ``flags`` really does return ``rebinds_caller``, and it still returns opaque from the
+    ``executes_input`` branch, which is the statement *before* the merge that reads the flag.
+    So on any entry that does not re-enter, the flag's value cannot change an outcome, and
+    measuring cmd's real scoping would not have moved a verdict.
+    """
+    from agentao.permissions_hardline._analysis import _literal_target
+    from agentao.permissions_hardline._effects import EffectFlag, Literal, lookup
+
+    entry = lookup("Import-Module", ShellDialect.POWERSHELL)
+    assert entry is not None and entry.caller_scope and not entry.reenters
+    assert EffectFlag.rebinds_caller in entry.flags((Literal("Foo"),))
+
+    commands = analyse(ShellDialect.POWERSHELL, "Import-Module Foo")
+    assert not isinstance(commands, Opaque)
+    assert _literal_target(commands[0], entry) is None
+
+    result = analyse_body(spec_for(Rung.pwsh, PWSH), "Import-Module Foo", (TOOLS,))
+    assert isinstance(result.verdict, Deny) and "executes_input" in result.verdict.reason
+
+
+# ------------------------------------------------------------------ G09-01
+
+# Measured, not chosen: this is what §7.3 q9's everyday toolchain actually answers on every
+# rung the flip can select. The two that do not survive are listed apart rather than omitted.
+EVERYDAY_PASS = (
+    "git status", "git log", "git diff", "ls", "cat notes.txt",
+    "grep -n needle notes.txt", "rg needle", "head notes.txt", "wc -l notes.txt",
+    "date", "python foo.py", "node foo.js",
+)
+EVERYDAY_REFUSED = ("python -c 1", "node -e 1")
+
+
+@pytest.mark.parametrize("body", EVERYDAY_PASS)
+def test_the_everyday_toolchain_survives_the_flip(measured, body):
+    """G09-01: the half of the flip's cost that can be measured before shipping.
+
+    LADDER-04 used to gate PR-7 on "the lowering rate in three buckets, accepted", and nothing
+    in the design set ever enumerated the buckets, named a threshold or named an owner. This
+    replaces the part of that question which is answerable here: every rung the flip can
+    select judges the everyday set alike, so ``git status`` going opaque after the flip is
+    caught by a red test rather than by a user. The distribution over real usage is G09-03's,
+    and it can only exist after shipping.
+    """
+    for rung, launcher in POLICY_ON:
+        result = analyse_body(spec_for(rung, launcher), body, (TOOLS,))
+        assert isinstance(result.verdict, Pass), (rung, body, result.verdict)
+
+
+@pytest.mark.parametrize("body", EVERYDAY_REFUSED)
+def test_the_two_everyday_forms_that_do_not_survive_are_named(measured, body):
+    """G09-01, the other half: ``python -c`` and ``node -e`` run code handed to them.
+
+    §7.3 q9 named both as members of the inert set, which EFF-01 forbids by its own definition
+    of inert, and G04-30 already pins them opaque. The cost belongs in a test rather than in a
+    decision's prose, because getting them back means changing EFF-01, not editing a list.
+    """
+    for rung, launcher in POLICY_ON:
+        result = analyse_body(spec_for(rung, launcher), body, (TOOLS,))
+        assert isinstance(result.verdict, Deny), (rung, body, result.verdict)
+        assert "executes_input" in result.verdict.reason
