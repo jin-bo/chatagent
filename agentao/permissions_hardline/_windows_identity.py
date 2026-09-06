@@ -691,10 +691,7 @@ class WindowsAccessOracle:
         embedded = self._verify_embedded(path)
         if embedded == 0:
             return embedded
-        catalog = self._catalog_for(path)
-        if catalog is None:
-            return embedded
-        return self._verify_catalog(path, *catalog)
+        return self._verify_catalog(path)
 
     def _verify_embedded(self, path: str) -> int:
         try:
@@ -742,55 +739,102 @@ class WindowsAccessOracle:
         wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
         return int(status)
 
-    def _catalog_for(self, path: str) -> Optional[Tuple[str, str]]:
-        """``(catalog file, member tag)`` for a catalog-signed file, or ``None``.
+    def _catalog_context(self, algorithm: Optional[str]) -> Optional[ctypes.c_void_p]:
+        """A ``CryptCATAdmin`` context, SHA-256 when the OS offers the newer entry point.
 
-        The member tag is the file's hash as uppercase hex, which is how a catalog names its
-        members; ``WinVerifyTrust`` needs both to check one file against one catalog.
+        ``CryptCATAdminAcquireContext`` hashes with SHA-1. Modern catalogs are SHA-256, and a
+        SHA-1 member tag will not verify against one however well the enumeration worked —
+        which is why the lookup can succeed and the verification still fail.
         """
-        try:
-            wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
-            kernel32 = self._kernel32
-        except OSError:
-            return None
+        wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
+        admin = ctypes.c_void_p()
+        if algorithm is not None:
+            try:
+                wintrust.CryptCATAdminAcquireContext2.restype = wintypes.BOOL
+                ok = wintrust.CryptCATAdminAcquireContext2(
+                    ctypes.byref(admin), None, wintypes.LPCWSTR(algorithm), None, 0)
+            except AttributeError:
+                return None
+            return admin if ok else None
+        wintrust.CryptCATAdminAcquireContext.restype = wintypes.BOOL
+        ok = wintrust.CryptCATAdminAcquireContext(ctypes.byref(admin), None, 0)
+        return admin if ok else None
 
-        GENERIC_READ = 0x80000000
-        FILE_SHARE_READ = 0x00000001
-        OPEN_EXISTING = 3
-
+    def _file_hash_for_catalog(self, admin: ctypes.c_void_p, path: str):
+        """``(buffer, length)`` of the catalog-member hash, or ``None``."""
+        wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
+        kernel32 = self._kernel32
+        GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING = 0x80000000, 0x00000001, 3
         kernel32.CreateFileW.restype = wintypes.HANDLE
         kernel32.CreateFileW.argtypes = [
             wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
             wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
         handle = kernel32.CreateFileW(
             path, GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING, 0, None)
-        if handle in (None, wintypes.HANDLE(-1).value, -1, 0xFFFFFFFFFFFFFFFF):
+        if not handle or handle == ctypes.c_void_p(-1).value:
             return None
         try:
+            size = wintypes.DWORD(0)
+            wintrust.CryptCATAdminCalcHashFromFileHandle2.restype = wintypes.BOOL
+            try:
+                wintrust.CryptCATAdminCalcHashFromFileHandle2(
+                    admin, wintypes.HANDLE(handle), ctypes.byref(size), None, 0)
+                if size.value:
+                    digest = (ctypes.c_ubyte * size.value)()
+                    if wintrust.CryptCATAdminCalcHashFromFileHandle2(
+                        admin, wintypes.HANDLE(handle), ctypes.byref(size), digest, 0,
+                    ):
+                        return digest, size
+            except AttributeError:
+                pass
             size = wintypes.DWORD(0)
             wintrust.CryptCATAdminCalcHashFromFileHandle.restype = wintypes.BOOL
             wintrust.CryptCATAdminCalcHashFromFileHandle(
                 wintypes.HANDLE(handle), ctypes.byref(size), None, 0)
-            if size.value == 0:
+            if not size.value:
                 return None
             digest = (ctypes.c_ubyte * size.value)()
             if not wintrust.CryptCATAdminCalcHashFromFileHandle(
                 wintypes.HANDLE(handle), ctypes.byref(size), digest, 0,
             ):
                 return None
+            return digest, size
         finally:
             kernel32.CloseHandle(wintypes.HANDLE(handle))
 
-        admin = ctypes.c_void_p()
-        wintrust.CryptCATAdminAcquireContext.restype = wintypes.BOOL
-        if not wintrust.CryptCATAdminAcquireContext(ctypes.byref(admin), None, 0):
-            return None
+    def _catalog_for(self, path: str) -> Optional[Tuple[str, str]]:
+        """``(catalog file, member tag)`` for a catalog-signed file, or ``None``.
+
+        The member tag is the file's hash as uppercase hex, which is how a catalog names its
+        members. SHA-256 is tried first because that is what current catalogs use.
+        """
+        found = self._catalog_lookup(path)
+        return None if found is None else (found[0], found[1])
+
+    def _catalog_lookup(self, path: str):
+        """``(catalog file, member tag, admin, digest, length)``, holding the context open.
+
+        The admin handle is part of the answer rather than an implementation detail:
+        ``WinVerifyTrust`` needs it to know which hash algorithm produced the member tag.
+        """
         try:
+            wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
+        except OSError:
+            return None
+        for algorithm in ("SHA256", None):
+            admin = self._catalog_context(algorithm)
+            if admin is None:
+                continue
+            hashed = self._file_hash_for_catalog(admin, path)
+            if hashed is None:
+                wintrust.CryptCATAdminReleaseContext(admin, 0)
+                continue
+            digest, size = hashed
             wintrust.CryptCATAdminEnumCatalogFromHash.restype = ctypes.c_void_p
-            info = wintrust.CryptCATAdminEnumCatalogFromHash(
-                admin, digest, size, 0, None)
+            info = wintrust.CryptCATAdminEnumCatalogFromHash(admin, digest, size, 0, None)
             if not info:
-                return None
+                wintrust.CryptCATAdminReleaseContext(admin, 0)
+                continue
             try:
                 class _CATALOG_INFO(ctypes.Structure):
                     _fields_ = [("cbStruct", wintypes.DWORD),
@@ -802,16 +846,19 @@ class WindowsAccessOracle:
                 if not wintrust.CryptCATCatalogInfoFromContext(
                     ctypes.c_void_p(info), ctypes.byref(details), 0,
                 ):
-                    return None
+                    continue
                 tag = "".join(f"{b:02X}" for b in digest)
-                return details.wszCatalogFile, tag
+                return details.wszCatalogFile, tag, admin, digest, size
             finally:
-                wintrust.CryptCATAdminReleaseCatalogContext(
-                    admin, ctypes.c_void_p(info), 0)
-        finally:
-            wintrust.CryptCATAdminReleaseContext(admin, 0)
+                wintrust.CryptCATAdminReleaseCatalogContext(admin, ctypes.c_void_p(info), 0)
+        return None
 
-    def _verify_catalog(self, path: str, catalog: str, tag: str) -> int:
+    def _verify_catalog(self, path: str) -> int:
+        """Verify ``path`` against the catalog that names it."""
+        found = self._catalog_lookup(path)
+        if found is None:
+            return -2  # no catalog names this file; not the same fact as "not signed"
+        catalog, tag, admin, digest, size = found
         try:
             wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
         except OSError:
@@ -846,27 +893,36 @@ class WindowsAccessOracle:
                 ("pSignatureSettings", ctypes.c_void_p),
             ]
 
-        action = _GUID(0xAAC56B, 0xCD44, 0x11D0,
-                       (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE))
-        info = _CATALOG_INFO_W()
-        info.cbStruct = ctypes.sizeof(_CATALOG_INFO_W)
-        info.pcwszCatalogFilePath = catalog
-        info.pcwszMemberTag = tag
-        info.pcwszMemberFilePath = path
-        data = _WINTRUST_DATA()
-        data.cbStruct = ctypes.sizeof(_WINTRUST_DATA)
-        data.dwUIChoice = 2            # WTD_UI_NONE
-        data.fdwRevocationChecks = 0
-        data.dwUnionChoice = 2         # WTD_CHOICE_CATALOG
-        data.pCatalog = ctypes.pointer(info)
-        data.dwStateAction = 1
-        wintrust.WinVerifyTrust.restype = wintypes.LONG
-        wintrust.WinVerifyTrust.argtypes = [
-            wintypes.HANDLE, ctypes.POINTER(_GUID), ctypes.c_void_p]
-        status = wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
-        data.dwStateAction = 2
-        wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
-        return int(status)
+        try:
+            action = _GUID(0xAAC56B, 0xCD44, 0x11D0,
+                           (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE))
+            info = _CATALOG_INFO_W()
+            info.cbStruct = ctypes.sizeof(_CATALOG_INFO_W)
+            info.pcwszCatalogFilePath = catalog
+            info.pcwszMemberTag = tag
+            info.pcwszMemberFilePath = path
+            # Handing back the hash and the context is what tells WinVerifyTrust which
+            # algorithm produced the tag; without them it assumes SHA-1 and a SHA-256
+            # catalog never matches — the lookup succeeds and the verification fails.
+            info.pbCalculatedFileHash = ctypes.cast(digest, ctypes.c_void_p)
+            info.cbCalculatedFileHash = size
+            info.hCatAdmin = admin
+            data = _WINTRUST_DATA()
+            data.cbStruct = ctypes.sizeof(_WINTRUST_DATA)
+            data.dwUIChoice = 2
+            data.fdwRevocationChecks = 0
+            data.dwUnionChoice = 2  # WTD_CHOICE_CATALOG
+            data.pCatalog = ctypes.pointer(info)
+            data.dwStateAction = 1
+            wintrust.WinVerifyTrust.restype = wintypes.LONG
+            wintrust.WinVerifyTrust.argtypes = [
+                wintypes.HANDLE, ctypes.POINTER(_GUID), ctypes.c_void_p]
+            status = wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
+            data.dwStateAction = 2
+            wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
+            return int(status)
+        finally:
+            wintrust.CryptCATAdminReleaseContext(admin, 0)
 
     def _signer_name(self, path: str) -> Optional[str]:
         """The signing certificate's subject, via the file's PKCS#7 message."""

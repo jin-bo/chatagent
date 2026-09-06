@@ -403,7 +403,13 @@ def test_a_catalog_signed_system_binary_verifies_and_reports_a_signer(oracle):
     exactly the files it exists to admit.
     """
     cmd = r"C:\Windows\System32\cmd.exe"
-    assert oracle.publisher_trusted(cmd) is True, "a catalog signature must verify"
+    # The status codes ride along: on a machine I cannot run, "False" alone says nothing
+    # about whether the embedded check, the lookup or the catalog verify was the one that
+    # refused. This is the third Windows test on this branch to need that.
+    why = (f"embedded={oracle._verify_embedded(cmd):#x} "
+           f"catalog={oracle._verify_catalog(cmd):#x} "
+           f"lookup={oracle._catalog_for(cmd)}")
+    assert oracle.publisher_trusted(cmd) is True, why
     signer = oracle.image_signer(cmd)
     assert signer, "the signer name is how an allowlist PublisherTrust entry is matched"
     assert "Microsoft" in signer
