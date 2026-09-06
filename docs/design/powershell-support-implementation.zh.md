@@ -510,6 +510,28 @@ IMG-06a 拆分的直接回归。**runner 是管理员**（§3.23 实测），特
 跨平台那几条（掩码之间的包含关系、祖先掩码不含两个 ADD 位）到处都跑：它们把 IMG-06a 的拆分写成算术，
 免得日后被无声改回去。
 
+**第二批：目标形态与映像解析（14/20）。** 又落八问 —— `target_platform`、
+`target_filesystem_is_local`、`target_project_root`、`target_base_env`、`target_path_entries`、
+`target_pinned_env`、`resolve_image`、`discover`。两处值得单记：
+
+- **`target_path_entries` 在这里就规范化**，而不是留给过滤器。`path_within()` 的义务文本写着它收
+  「两条已规范化的路径」，而 PATH 条目是环境里的原始字符串 —— 可以经 `..`、8.3 短名或 junction
+  绕到同一个目录。这正是 rev 43 给 `canonicalize` 找回来的那个调用点（方法规则 24），现在它真的被调了。
+- **`discover` 不看 PATH。** IMG-05 (a) 说 PATH 命中不算候选：PATH 恰恰是攻击者能塑形的东西、
+  ENV-01 就是为过滤它而存在的，从它解析出解释器等于在任何过滤发生之前把答案交回攻击者手里。
+  实现按 rung 查安装位置（`%ProgramFiles%\PowerShell\7\pwsh.exe` 等），未展开的变量视为「不是路径」。
+
+`unknown_keys` 取 ENV-06b 的判据而不是「环境里的每一个键」—— 后者在每台机器上都会报出一堆新奇的未知、
+什么也说明不了。收的是**带路径值、而本表没有登记**的那些（`VIRTUAL_ENV`、`JAVA_HOME`、`CARGO_HOME` …），
+也就是 ENV-06g 写下的那条判据。
+
+**还差六问，且它们被写成断言而不是散文**：`publisher_trusted` 与 `image_signer`（Authenticode）、
+`read_identity`／`resolve_pshome`／`read_config_sources`／`preflight`（要起解释器）。
+`test_the_answered_set_is_stated_rather_than_implied` 把这个集合钉死 —— **这就是「部分完成」不会被报成
+「完成」的机制**；另有一条断言 `oracle_complete(WindowsAccessOracle)` 为假，且它问的是**类**而不是实例
+（`oracle_complete` 找的是可调用属性，类同样答得上，而造实例要真 token），于是这条保证在跑套件的
+每一个平台上都被检查，而不只在那一个 job 上。
+
 **首跑失败教了一条，而且是代码对、测试错。** 两条断言「不能替换」的用例在真机上都答了「能」——
 因为测试自己建的目录，属主就是测试自己的主体，而**属主隐式持有 `READ_CONTROL` 与 `WRITE_DAC`**，
 后者在两张掩码里都有：能重写 DACL 的人可以给自己授予任何东西。IMG-01 那句「或所有权」写着这件事，

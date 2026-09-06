@@ -24,9 +24,22 @@ import ctypes
 import hashlib
 import os
 from ctypes import wintypes
-from typing import FrozenSet, Optional, Tuple
+from typing import FrozenSet, Mapping, Optional, Tuple
 
-from ..capabilities.shell_spec import AbsPath, Sha256, Subject
+from ..capabilities.shell_spec import (
+    AbsDir,
+    AbsFile,
+    AbsPath,
+    DriveSpec,
+    FsId,
+    PinnedEnv,
+    Platform,
+    ResolvedImage,
+    RootRelPath,
+    Rung,
+    Sha256,
+    Subject,
+)
 from ._trust import ReparseResult, ReparseState
 
 __all__ = [
@@ -76,6 +89,18 @@ system consults ``SeRestorePrivilege`` and ``SeBackupPrivilege`` when a handle i
 after this call. So a token holding one of these would pass a pure mask check and still be
 able to replace the image — which is exactly how an elevated agentao becomes its own
 attacker. **Presence, not enabled-state**: a token that holds a privilege can enable it.
+"""
+
+_AMBIENT_PATH_KEYS = (
+    "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "PSModulePath",
+    "PYTHONPATH", "NODE_PATH", "NODE_OPTIONS", "VIRTUAL_ENV", "CONDA_PREFIX",
+    "JAVA_HOME", "CARGO_HOME", "RUSTUP_HOME", "GOPATH", "GOROOT", "DOTNET_ROOT",
+)
+"""ENV-06b: environment keys that carry a *path* and that this table does not register.
+
+Not "every key in the environment" — that would report a novel unknown on every machine and
+say nothing. These are the ones a rule would have to depend on if it registered them, which
+is the criterion ENV-06g wrote down.
 """
 
 _MAXIMUM_ALLOWED = 0x02000000
@@ -188,6 +213,23 @@ def _token_information(advapi32: ctypes.WinDLL, token: wintypes.HANDLE,
     return buf
 
 
+def _filesystem_identity(path: str) -> Optional[FsId]:
+    """SPEC-04's identity, and ``st_ino == 0`` is not one.
+
+    Python documents the field as identifying a file only when non-zero, and Windows reports
+    zero whenever the file index is unavailable. Passing it through would give every such
+    file the identity ``<dev>:0``, so a swap between two of them would compare equal and the
+    re-check before spawning would report a clean result while proving nothing.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if not st.st_ino:
+        return None
+    return FsId(f"{st.st_dev}:{st.st_ino}")
+
+
 def token_sid() -> Optional[str]:
     """The current process token's user SID, as a string — the subject a child inherits."""
     advapi32, kernel32 = _bind()
@@ -255,8 +297,42 @@ class WindowsAccessOracle:
     as though it had been read and found ordinary.
     """
 
-    def __init__(self, subject: Subject) -> None:
+    #: ENV-06b — the environment keys this table registers, in `PinnedEnv` field order.
+    #: A key present in the environment and absent here lands in ``unknown_keys``, which is
+    #: how "the oracle handed back something nobody validated" stays visible.
+    _PINNED_KEYS = (
+        "SystemRoot", "windir", "SystemDrive", "ProgramData", "ProgramFiles",
+        "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles",
+        "CommonProgramFiles(x86)", "ALLUSERSPROFILE", "PUBLIC", "ComSpec",
+        "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+        "TEMP", "TMP", "TMPDIR",
+    )
+
+    #: IMG-05 (a): where a rung's interpreter is looked for. **Not PATH** — a PATH hit is not
+    #: a candidate, because PATH is exactly what an attacker controls and ENV-01 exists to
+    #: filter it. These are the install locations the interpreters actually use.
+    _WELL_KNOWN = {
+        Rung.pwsh: (
+            r"%ProgramFiles%\PowerShell\7\pwsh.exe",
+            r"%ProgramFiles%\PowerShell\6\pwsh.exe",
+            r"%ProgramW6432%\PowerShell\7\pwsh.exe",
+        ),
+        Rung.powershell: (
+            r"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe",
+        ),
+        Rung.git_bash: (
+            r"%ProgramFiles%\Git\bin\bash.exe",
+            r"%ProgramFiles(x86)%\Git\bin\bash.exe",
+            r"%ProgramW6432%\Git\bin\bash.exe",
+        ),
+        Rung.cmd: (
+            r"%SystemRoot%\System32\cmd.exe",
+        ),
+    }
+
+    def __init__(self, subject: Subject, project_root: Optional[str] = None) -> None:
         self._subject = subject
+        self._project_root = project_root
         self._advapi32, self._kernel32 = _bind()
         self._client: Optional[wintypes.HANDLE] = None
         # Held privileges decide every answer before a DACL is read, so they are read once.
@@ -333,6 +409,124 @@ class WindowsAccessOracle:
         if not target or target == path or not os.path.isabs(target):
             return ReparseResult(ReparseState.error)
         return ReparseResult(ReparseState.resolved, AbsPath(target))
+
+    # -------------------------------------------------------------- the target's shape
+
+    def target_platform(self) -> Platform:
+        return Platform.WINDOWS
+
+    def target_filesystem_is_local(self) -> Optional[bool]:
+        """SPEC-04a. This oracle only ever describes the machine it runs on."""
+        return True
+
+    def target_project_root(self) -> Optional[AbsPath]:
+        return None if self._project_root is None else self.canonicalize(self._project_root)
+
+    def target_base_env(self, subject: Subject) -> Optional[Mapping[str, str]]:
+        if subject != self._subject:
+            return None
+        return dict(os.environ)
+
+    def target_path_entries(self, subject: Subject) -> Optional[Tuple[AbsPath, ...]]:
+        """ENV-01's raw material: the entries, canonical, in order, duplicates dropped.
+
+        Canonicalising here rather than at the filter is the point of `canonicalize` having a
+        caller at all: `path_within` is documented to take already-canonical paths, while a
+        PATH entry is a raw environment string that may reach a directory through ``..``, an
+        8.3 short name, or a junction.
+        """
+        if subject != self._subject:
+            return None
+        entries: list = []
+        for raw in os.environ.get("PATH", "").split(os.pathsep):
+            if not raw.strip():
+                continue
+            canonical = self.canonicalize(os.path.expandvars(raw.strip().strip('"')))
+            if canonical is not None and canonical not in entries:
+                entries.append(canonical)
+        return tuple(entries)
+
+    def target_pinned_env(self, subject: Subject) -> Optional[PinnedEnv]:
+        """ENV-06: the closed set, read off the environment and typed by field.
+
+        A key this table does not register goes into ``unknown_keys`` rather than being
+        dropped: dropping it would report a validated environment when one key was never
+        looked at, which is the failure ENV-06a is written against.
+        """
+        if subject != self._subject:
+            return None
+        get = os.environ.get
+
+        def directory(name: str) -> Optional[AbsDir]:
+            value = get(name)
+            return AbsDir(value) if value else None
+
+        unknown = frozenset(
+            key for key in os.environ
+            if key.upper() in {k.upper() for k in _AMBIENT_PATH_KEYS}
+            and key.upper() not in {k.upper() for k in self._PINNED_KEYS}
+        )
+        return PinnedEnv(
+            system_root=directory("SystemRoot"),
+            windir=directory("windir"),
+            system_drive=DriveSpec(get("SystemDrive")) if get("SystemDrive") else None,
+            program_data=directory("ProgramData"),
+            program_files=directory("ProgramFiles"),
+            program_files_x86=directory("ProgramFiles(x86)"),
+            program_w6432=directory("ProgramW6432"),
+            common_program_files=directory("CommonProgramFiles"),
+            common_program_files_x86=directory("CommonProgramFiles(x86)"),
+            all_users_profile=directory("ALLUSERSPROFILE"),
+            public=directory("PUBLIC"),
+            com_spec=AbsFile(get("ComSpec")) if get("ComSpec") else None,
+            home=AbsDir(get("USERPROFILE") or ""),
+            user_profile=directory("USERPROFILE"),
+            home_drive=DriveSpec(get("HOMEDRIVE")) if get("HOMEDRIVE") else None,
+            home_path=RootRelPath(get("HOMEPATH")) if get("HOMEPATH") else None,
+            appdata=directory("APPDATA"),
+            local_appdata=directory("LOCALAPPDATA"),
+            temp=AbsDir(get("TEMP") or ""),
+            tmp=AbsDir(get("TMP") or ""),
+            tmpdir=None,  # a Windows target has no TMPDIR field (ENV-06f)
+            unknown_keys=unknown,
+        )
+
+    # -------------------------------------------------------------- images
+
+    def resolve_image(self, path: AbsPath, subject: Subject) -> Optional[ResolvedImage]:
+        """A path is a name for a file; this is the file. SPEC-04's filesystem identity is
+        what makes "the same image" a question the executor can re-ask before it spawns."""
+        if subject != self._subject:
+            return None
+        canonical = self.canonicalize(path)
+        if canonical is None or not os.path.isfile(canonical):
+            return None
+        identity = _filesystem_identity(canonical)
+        if identity is None:
+            return None  # unidentifiable is not identified
+        return ResolvedImage(
+            canonical_path=canonical,
+            filesystem_identity=identity,
+            execution_subject=subject,
+        )
+
+    def discover(self, rung: Rung, subject: Subject) -> Optional[ResolvedImage]:
+        """IMG-05 (a): the install locations, never PATH.
+
+        A PATH hit is not a candidate. PATH is the thing an attacker gets to shape, and
+        ENV-01 exists to filter it — resolving the interpreter through it would put the
+        answer back in the attacker's hands before any filtering happened.
+        """
+        if subject != self._subject:
+            return None
+        for template in self._WELL_KNOWN.get(rung, ()):
+            expanded = os.path.expandvars(template)
+            if "%" in expanded:
+                continue  # an unset variable, not a path
+            image = self.resolve_image(AbsPath(expanded), subject)
+            if image is not None:
+                return image
+        return None
 
     # -------------------------------------------------------------- internals
 

@@ -272,6 +272,129 @@ def test_an_absent_path_is_an_error_state_not_not_a_reparse_point(oracle, tmp_pa
     assert oracle.resolve_reparse(str(tmp_path / "gone")).state is ReparseState.error
 
 
+# ------------------------------------------------- the target's shape and images
+
+
+def test_the_answered_set_is_stated_rather_than_implied():
+    """SPEC-05c refuses an incomplete oracle, so which methods are missing is a fact worth
+    pinning: it is what stops "partial" being reported as "done"."""
+    from agentao.permissions_hardline._trust import ORACLE_METHODS
+
+    answered = {m for m in ORACLE_METHODS if hasattr(WindowsAccessOracle, m)}
+    missing = set(ORACLE_METHODS) - answered
+    assert missing == {
+        "publisher_trusted", "image_signer",          # Authenticode
+        "read_identity", "resolve_pshome",            # spawn the interpreter
+        "read_config_sources", "preflight",
+    }
+
+
+def test_an_incomplete_oracle_is_refused():
+    """And it is refused *there*, not with an AttributeError inside launch().
+
+    Asked of the class rather than an instance: `oracle_complete` looks for callable
+    attributes, which a class answers the same way, and building an instance needs a real
+    Windows token — so this way the guarantee is checked on every platform that runs the
+    suite instead of only the one job.
+    """
+    from agentao.permissions_hardline._trust import oracle_complete
+
+    assert oracle_complete(WindowsAccessOracle) is False   # type: ignore[arg-type]
+
+
+@windows_only
+def test_path_entries_are_canonical_deduplicated_and_ordered(oracle, subject, tmp_path,
+                                                             monkeypatch):
+    r"""ENV-01's raw material. ``..`` and a repeat must collapse, because `path_within` is
+    documented to take already-canonical paths while a PATH entry is a raw string."""
+    real = tmp_path / "bin"
+    real.mkdir()
+    detour = str(tmp_path / "bin" / ".." / "bin")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(real), detour, str(real)]))
+
+    entries = oracle.target_path_entries(subject)
+    assert entries is not None
+    assert [e for e in entries if "bin" in e] == [os.path.realpath(str(real))]
+
+
+@windows_only
+def test_path_entries_are_refused_for_another_subject(oracle):
+    assert oracle.target_path_entries(Subject("S-1-5-21-0-0-0-9")) is None
+
+
+@windows_only
+def test_the_pinned_env_reports_a_path_key_it_does_not_register(oracle, subject, monkeypatch):
+    """ENV-06b: an unregistered key is surfaced, not dropped. Dropping it would report a
+    validated environment when one key was never looked at."""
+    monkeypatch.setenv("CARGO_HOME", "C:\\cargo")
+    pinned = oracle.target_pinned_env(subject)
+    assert pinned is not None
+    assert any(k.upper() == "CARGO_HOME" for k in pinned.unknown_keys)
+
+
+@windows_only
+def test_the_pinned_env_does_not_report_registered_keys_as_unknown(oracle, subject):
+    pinned = oracle.target_pinned_env(subject)
+    assert pinned is not None
+    registered = {k.upper() for k in WindowsAccessOracle._PINNED_KEYS}
+    assert not {k.upper() for k in pinned.unknown_keys} & registered
+
+
+@windows_only
+def test_a_windows_pinned_env_has_no_tmpdir_field(oracle, subject):
+    """ENV-06f: TMPDIR is the POSIX target's field, and a value there fails the shape check."""
+    pinned = oracle.target_pinned_env(subject)
+    assert pinned is not None and pinned.tmpdir is None
+
+
+@windows_only
+def test_resolve_image_reports_a_filesystem_identity_not_just_a_path(oracle, subject, tmp_path):
+    image = tmp_path / "img.exe"
+    image.write_bytes(b"MZ")
+
+    resolved = oracle.resolve_image(str(image), subject)
+    assert resolved is not None
+    assert resolved.filesystem_identity
+    assert resolved.execution_subject == subject
+    assert os.path.normcase(resolved.canonical_path) == os.path.normcase(str(image))
+
+
+@windows_only
+def test_resolve_image_refuses_a_directory_and_an_absent_path(oracle, subject, tmp_path):
+    assert oracle.resolve_image(str(tmp_path), subject) is None
+    assert oracle.resolve_image(str(tmp_path / "gone.exe"), subject) is None
+
+
+@windows_only
+def test_discover_finds_the_interpreters_this_runner_has(oracle, subject):
+    from agentao.capabilities.shell_spec import Rung
+
+    found = {rung: oracle.discover(rung, subject) for rung in
+             (Rung.pwsh, Rung.powershell, Rung.cmd, Rung.git_bash)}
+    # cmd and Windows PowerShell ship with the OS; pwsh and Git are runner-dependent, so a
+    # missing one is a fact about the image rather than a failure.
+    assert found[Rung.cmd] is not None
+    assert found[Rung.powershell] is not None
+    for rung, image in found.items():
+        if image is not None:
+            assert os.path.isfile(image.canonical_path), rung
+
+
+@windows_only
+def test_discover_does_not_consult_path(oracle, subject, tmp_path, monkeypatch):
+    r"""IMG-05 (a): a PATH hit is not a candidate. PATH is the thing an attacker shapes, and
+    ENV-01 exists to filter it — resolving through it would answer before any filtering."""
+    from agentao.capabilities.shell_spec import Rung
+
+    planted = tmp_path / "pwsh.exe"
+    planted.write_bytes(b"MZ")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "nothing-here"))
+    monkeypatch.setenv("ProgramW6432", str(tmp_path / "nothing-here"))
+
+    assert oracle.discover(Rung.pwsh, subject) is None
+
+
 def test_the_module_imports_on_every_platform():
     """It is reached from `permissions_hardline`, which POSIX hosts import; binding Win32 at
     call time rather than import time is what keeps that true."""
