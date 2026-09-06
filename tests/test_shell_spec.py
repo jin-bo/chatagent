@@ -720,20 +720,34 @@ def test_turning_the_ladder_on_selects_a_rung_instead_of_raising(monkeypatch):
     oracle and there is not one here. That is the same shape a real Windows host produces
     when the ladder runs empty, which is what LADDER-03 turns into a refusal.
     """
+    import os
+
     import agentao.capabilities.shell_spec as ss
 
     monkeypatch.setattr(ss, "LADDER_FLIPPED", True)
     out = ss.default_spec(windows=True)
+
+    # The claim is about the *channel*: a verdict, not an exception. The reason legitimately
+    # differs by host and the first version of this test asserted the one it happened to run
+    # on — off Windows there is no native oracle to build, while on Windows the ladder really
+    # runs and then refuses, because the CI token is an elevated administrator whose trusted
+    # set is empty by design (evidence §3.23). Both are this function working.
     assert isinstance(out, ss.Exhausted), out
-    assert "oracle" in out.reason, out.reason
+    if os.name == "nt":
+        assert "rung" in out.reason, out.reason
+    else:
+        assert "oracle" in out.reason, out.reason
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the guard under test is the non-Windows branch")
 def test_a_windows_target_on_a_posix_host_refuses_before_it_touches_ctypes():
     """The guard is on the *host*, and it has to sit before both calls rather than between.
 
     ``native_oracle`` answers ``None`` off Windows by contract, but ``token_sid`` is bare
     ``ctypes`` with no such guard and raises ``AttributeError`` on its first ``WinDLL``. An
     exception is not a verdict, so the order of these two matters.
+
+    Skipped on Windows rather than generalised: there is no POSIX host there to test.
     """
     from agentao.capabilities.shell_spec import Exhausted, ShellBlock, default_spec
 
