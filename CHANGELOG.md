@@ -11,9 +11,82 @@ _Targeting 0.4.22. Add entries under the relevant heading as work lands._
 
 ### Added
 
+- **A Windows shell ladder, opt-in.** On Windows, `run_shell_command` has
+  always gone straight to `%COMSPEC% /c` with a regex floor written for POSIX
+  syntax. There is now a ladder that resolves an interpreter by identity —
+  `pwsh` → `powershell.exe` → `cmd` — attests the image it is about to launch,
+  hands the child a closed environment, and reads the command with that
+  dialect's own grammar rather than someone else's. Turn it on per host with
+  `"shell": {"ladder": true}` in the **user-level** `permissions.json`.
+
+  **The default has not changed, and turning this on is a real change.** An
+  interpreter that cannot be attested is refused rather than launched, and the
+  trust predicate asks whether *the token the child will run as* could replace
+  the image or any directory above it. **If agentao runs as an administrator
+  on Windows, that is true of everything, so the trusted set is empty and every
+  shell call is denied.** That is the rule working — an elevated agentao is its
+  own attacker — and it is measured rather than predicted
+  (`docs/reference/powershell-support-evidence.zh.md` §3.23). The same key
+  turns it back off, which is why it is a configuration key and not a release.
+
+- **`agentao.permissions_hardline.classify_refusal` / `tally`.** A refusal
+  reason parses into a family, a dialect and a rule, and a sequence of them
+  tallies into a distribution. Hosts that want to know *why* the floor is
+  refusing things now have something better than substring matching: the
+  reason space is six families, not one, and 23 of the shipped reasons are
+  English sentences where colons carry no structure.
+
+- **A Windows CI job** — Python 3.10 and 3.12, the full suite. This repository
+  had never run its tests on Windows; the first run failed 155 of them. Six
+  were product defects, listed under Fixed, and none of them is a "Windows
+  bug": each is something POSIX absorbs quietly and Windows bills for.
+
 ### Changed
 
+- **`default_spec()` takes the shell block and can answer `Exhausted`.** It
+  used to take no configuration and always return a `ShellSpec`. Embedders
+  calling it directly should handle both arms; every in-tree caller already
+  did, because `ShellExecutor.shell_spec` has always been allowed to refuse.
+  `LocalShellExecutor` gained a `shell_block=` argument, and
+  `build_from_environment` supplies one when the host did not pass its own
+  executor.
+
 ### Fixed
+
+- **Every edit of a CRLF file doubled its carriage returns, on Windows.**
+  `LocalFileSystem.write_text` did not pass `newline=""`, so Python translated
+  each `\n` to `os.linesep` while the edit tool read the file as bytes. Fixed
+  at all three writers in that path — the third is an `os.fdopen` on the
+  staging file, which is the one an *existing* file goes through, and which a
+  literal search for `open(` does not find.
+
+- **The state directory moved on every run when there was no home directory.**
+  The privacy check tested POSIX mode bits that `mkdir(mode=0o700)` does not
+  set on Windows, so it could never be satisfied and the fallback minted a
+  fresh `mkdtemp` each call. Windows now checks that the path is a real
+  directory and not a reparse point.
+
+- **Every memory read and write leaked a SQLite connection.** `with
+  self._connect() as conn` reads like a resource scope and is not:
+  `Connection.__exit__` commits or rolls back and leaves the connection open.
+  On POSIX the file simply unlinks; on Windows the lock survives, so a host
+  could not delete its own workspace. `MemoryManager.close()` and
+  `Agentao.close()` now close the stores.
+
+- **Two session saves inside one clock tick destroyed the first.** The filename
+  is `datetime.now()` and nothing checked whether the name was taken. Windows'
+  clock is far coarser than six digits of microseconds suggest.
+
+- **An atomic write could fail because someone else had the file open.**
+  `os.replace` is refused on Windows while any reader holds the target, and
+  Python's `open` does not request `FILE_SHARE_DELETE` — an editor, an indexer
+  or a virus scanner is enough. Short-lived handles are now waited out for
+  about 200 ms. A continuously held one still raises, so on Windows the atomic
+  write is "atomic or refused": the reader never tears, the writer pays.
+
+- **A healthy ACP server was reported as an immediate exit.** The startup check
+  waited a flat 50 ms to decide a spawned server had died, and Windows process
+  creation routinely takes longer. It is 1 s there, 50 ms elsewhere.
 
 - **`run_shell_command` promised the model `bash -c` and delivered `/bin/sh
   -c`. It is bash now.** The tool executes through
