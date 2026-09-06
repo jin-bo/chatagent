@@ -186,6 +186,7 @@ now: every rung agentao can construct is policy-off, so the shell still launches
 | `path` | string | Absolute path to an interpreter. **Paired with `dialect`** — supplying one without the other is an error, because neither can be derived from the other. |
 | `dialect` | `"posix"` / `"cmd"` / `"powershell"` | The syntax that interpreter reads. There is no `rung` key: the rung is derived from the dialect, the target platform and the image's identity. |
 | `allow_git_bash` | bool | Default `false`. Whether Git Bash may be selected ahead of `cmd` on Windows. |
+| `ladder` | bool | **Unset by default, and unset is not `false`.** Whether the trusted-resolution ladder runs at all. Absent means follow the built-in answer, so a release that turns the ladder on reaches hosts that never configured it; an explicit value outranks the built-in in both directions. Turning it **on** before the release is unsupported and can deny every shell call, and the same key is the way back. |
 | `allowlist` | array | Content pins (`{"path": …, "sha256": …}`) and trusted publishers (`{"signer": …}`). A pin is an **additional** condition on an image, never a replacement for its location. Its `path` is compared verbatim, so write the canonical spelling. |
 | `env_passthrough` | array | Literal environment key names to pass through to the child on a policy-on rung. Entries containing `*` are dropped, and the reserved keys (`PATH`, `BASH_ENV`, `SHELLOPTS`, …) cannot be granted back. |
 

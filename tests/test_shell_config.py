@@ -112,6 +112,25 @@ def test_half_a_shell_block_is_refused_and_names_the_missing_half(tmp_path, bloc
     assert missing in str(exc.value)
 
 
+@pytest.mark.parametrize("raw,expected", [(True, True), (False, False)])
+def test_the_ladder_flip_is_readable_from_the_user_file(tmp_path, raw, expected):
+    """G09-02: LADDER-04's replacement gate wants a way back that is not a release."""
+    root = write_config(tmp_path, {"rules": [], "shell": {"ladder": raw}})
+    config = load_permission_config(project_root=root, user_root=root)
+    assert config.shell is not None and config.shell.ladder is expected
+
+
+def test_an_absent_ladder_key_stays_unset_rather_than_off(tmp_path):
+    """``None`` and ``False`` are different answers, and the difference is load-bearing.
+
+    Reading an absent key as ``False`` would make every unconfigured host opt out of the flip
+    on the day it ships — the release would reach nobody, and nothing would say why.
+    """
+    root = write_config(tmp_path, {"rules": [], "shell": {"allow_git_bash": True}})
+    config = load_permission_config(project_root=root, user_root=root)
+    assert config.shell is not None and config.shell.ladder is None
+
+
 def test_rung_is_not_a_configuration_field(tmp_path):
     """CFG-02: it is derived from the dialect, the target platform and the image's identity.
 

@@ -27,6 +27,7 @@ from agentao.capabilities.shell_spec import (
     ShellSpec,
     Subject,
     WindowsLaunch,
+    ladder_enabled,
     legacy_spec,
 )
 from agentao.permissions_hardline._trust import (
@@ -446,6 +447,59 @@ def test_the_child_path_is_the_sequence_decide_already_filtered():
 
 
 # ------------------------------------------------------------------ ENV-06b / ENV-06f
+
+
+# ------------------------------------------------------------------ G09-02, the flip
+
+
+def test_the_flip_is_readable_from_configuration_in_both_directions():
+    """G09-02: off, on, off — and the way back is not a release.
+
+    LADDER-04's replacement gate asks for this because the distribution that would justify
+    keeping the flip on can only be measured after shipping, so the honest form of "we do not
+    know yet" is a switch the user can reach. The middle derivation really runs the ladder;
+    the two ends are the pre-flip rung, and identical to each other.
+    """
+    def derive(ladder):
+        return select_rung(ShellBlock(ladder=ladder), ladder_oracle(), SUBJECT)
+
+    off_first, on, off_again = derive(False), derive(True), derive(False)
+    for spec in (off_first, on, off_again):
+        assert isinstance(spec, ShellSpec), spec
+    assert off_first.rung is Rung.legacy_cmd
+    assert on.rung is Rung.pwsh and on.policy_enabled
+    assert off_again.rung is Rung.legacy_cmd
+    assert off_first.fingerprint == off_again.fingerprint
+
+
+def test_an_unset_flip_follows_the_built_in_and_an_explicit_one_does_not(monkeypatch):
+    """``None`` is not ``False``, and this is the assertion that holds them apart.
+
+    With a plain ``bool`` the unset case would be pinned off, so the day ``LADDER_FLIPPED``
+    becomes True the release would ship to nobody and no configuration would say why.
+    """
+    import agentao.capabilities.shell_spec as spec_mod
+
+    assert ladder_enabled(ShellBlock()) is spec_mod.LADDER_FLIPPED
+    monkeypatch.setattr(spec_mod, "LADDER_FLIPPED", True)
+    assert ladder_enabled(ShellBlock()) is True           # unset follows the built-in
+    assert ladder_enabled(ShellBlock(ladder=False)) is False   # an explicit off outranks it
+    assert ladder_enabled(ShellBlock(ladder=True)) is True
+
+
+def test_the_built_in_flip_moves_rung_selection_and_the_config_can_take_it_back(monkeypatch):
+    """The escape hatch has to work against the *released* default, not only against False.
+
+    Asserting it only while the built-in is off would leave the case that matters untested:
+    a user whose shell is being denied after a release that turned the ladder on.
+    """
+    import agentao.capabilities.shell_spec as spec_mod
+
+    monkeypatch.setattr(spec_mod, "LADDER_FLIPPED", True)
+    unset = select_rung(ShellBlock(), ladder_oracle(), SUBJECT)
+    rescued = select_rung(ShellBlock(ladder=False), ladder_oracle(), SUBJECT)
+    assert isinstance(unset, ShellSpec) and unset.rung is Rung.pwsh
+    assert isinstance(rescued, ShellSpec) and rescued.rung is Rung.legacy_cmd
 
 
 # ------------------------------------------------------------------ q14 / ENV-06g

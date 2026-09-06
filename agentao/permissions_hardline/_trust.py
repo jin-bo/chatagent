@@ -56,7 +56,7 @@ from ..capabilities.shell_spec import (
     GIT_BASH_RELEASED,
     HashPin,
     InterpreterIdentity,
-    LADDER_FLIPPED,
+    ladder_enabled,
     LauncherIdentity,
     LegacyLaunch,
     PinnedEnv,
@@ -1200,7 +1200,7 @@ def select_rung(
     # rather than replacing it, so the ladder still runs (LADDER-02).
     if target is Platform.POSIX:
         return legacy_spec(ShellDialect.POSIX, Rung.system_posix, target, subject, local)
-    if not LADDER_FLIPPED:  # LADDER-05: pre-flip Windows reports CMD x legacy_cmd
+    if not ladder_enabled(config):  # LADDER-05 / G09-02: config first, then the built-in
         return legacy_spec(ShellDialect.CMD, Rung.legacy_cmd, target, subject, local)
     if not oracle_complete(oracle):
         return Exhausted("SPEC-05c: incomplete oracle")
